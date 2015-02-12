@@ -38,6 +38,7 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/client/record"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/dockertools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/envvars"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/rockettools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/volume"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/probe"
@@ -661,7 +662,7 @@ func (kl *Kubelet) runContainer(pod *api.BoundPod, container *api.Container, pod
 			WorkingDir:   container.WorkingDir,
 		},
 	}
-	dockerContainer, err := kl.dockerClient.CreateContainer(opts)
+	containerID, err := rockettools.PrepareContainer(opts)
 	if err != nil {
 		if ref != nil {
 			record.Eventf(ref, "failed",
@@ -671,8 +672,8 @@ func (kl *Kubelet) runContainer(pod *api.BoundPod, container *api.Container, pod
 	}
 	// Remember this reference so we can report events about this container
 	if ref != nil {
-		kl.setRef(dockertools.DockerID(dockerContainer.ID), ref)
-		record.Eventf(ref, "created", "Created with docker id %v", dockerContainer.ID)
+		kl.setRef(dockertools.DockerID(containerID), ref)
+		record.Eventf(ref, "created", "Created with docker id %v", containerID)
 	}
 
 	if len(container.TerminationMessagePath) != 0 {
@@ -680,7 +681,7 @@ func (kl *Kubelet) runContainer(pod *api.BoundPod, container *api.Container, pod
 		if err := os.MkdirAll(p, 0750); err != nil {
 			glog.Errorf("Error on creating %q: %v", p, err)
 		} else {
-			containerLogPath := path.Join(p, dockerContainer.ID)
+			containerLogPath := path.Join(p, containerID)
 			fs, err := os.Create(containerLogPath)
 			if err != nil {
 				glog.Errorf("Error on creating termination-log file %q: %v", containerLogPath, err)
@@ -712,26 +713,26 @@ func (kl *Kubelet) runContainer(pod *api.BoundPod, container *api.Container, pod
 			return "", err
 		}
 	}
-	err = kl.dockerClient.StartContainer(dockerContainer.ID, hc)
+	err = rockettools.StartContainer(containerID, hc)
 	if err != nil {
 		if ref != nil {
 			record.Eventf(ref, "failed",
-				"Failed to start with docker id %v with error: %v", dockerContainer.ID, err)
+				"Failed to start with docker id %v with error: %v", containerID, err)
 		}
 		return "", err
 	}
 	if ref != nil {
-		record.Eventf(ref, "started", "Started with docker id %v", dockerContainer.ID)
+		record.Eventf(ref, "started", "Started with docker id %v", containerID)
 	}
 
 	if container.Lifecycle != nil && container.Lifecycle.PostStart != nil {
 		handlerErr := kl.runHandler(GetPodFullName(pod), pod.UID, container, container.Lifecycle.PostStart)
 		if handlerErr != nil {
-			kl.killContainerByID(dockerContainer.ID, "")
+			kl.killContainerByID(containerID, "")
 			return dockertools.DockerID(""), fmt.Errorf("failed to call event handler: %v", handlerErr)
 		}
 	}
-	return dockertools.DockerID(dockerContainer.ID), err
+	return dockertools.DockerID(containerID), err
 }
 
 var masterServices = util.NewStringSet("kubernetes", "kubernetes-ro")
