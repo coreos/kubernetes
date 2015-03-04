@@ -1,6 +1,6 @@
 {
 	"ImportPath": "github.com/GoogleCloudPlatform/kubernetes",
-	"GoVersion": "go1.4",
+	"GoVersion": "go1.4.1",
 	"Packages": [
 		"./..."
 	],
@@ -48,6 +48,16 @@
 			"ImportPath": "github.com/coreos/go-etcd/etcd",
 			"Comment": "v0.2.0-rc1-120-g23142f6",
 			"Rev": "23142f6773a676cc2cae8dd0cb90b2ea761c853f"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-systemd/dbus",
+			"Comment": "v2-43-g2d21675",
+			"Rev": "2d21675230a81a503f4363f4aa3490af06d52bb8"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-systemd/unit",
+			"Comment": "v2-43-g2d21675",
+			"Rev": "2d21675230a81a503f4363f4aa3490af06d52bb8"
 		},
 		{
 			"ImportPath": "github.com/cpuguy83/go-md2man/mangen",
@@ -127,6 +137,11 @@
 		{
 			"ImportPath": "github.com/ghodss/yaml",
 			"Rev": "588cb435e59ee8b6c2795482887755841ad67207"
+		},
+		{
+			"ImportPath": "github.com/godbus/dbus",
+			"Comment": "v2",
+			"Rev": "88765d85c0fdadcd98a54e30694fa4e4f5b51133"
 		},
 		{
 			"ImportPath": "github.com/golang/glog",

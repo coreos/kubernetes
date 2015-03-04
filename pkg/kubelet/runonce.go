@@ -88,34 +88,36 @@ func (kl *Kubelet) runOnce(pods []api.BoundPod) (results []RunPodResult, err err
 
 // runPod runs a single pod and wait until all containers are running.
 func (kl *Kubelet) runPod(pod api.BoundPod) error {
-	delay := RunOnceRetryDelay
-	retry := 0
-	for {
-		dockerContainers, err := dockertools.GetKubeletDockerContainers(kl.dockerClient, false)
-		if err != nil {
-			return fmt.Errorf("failed to get kubelet docker containers: %v", err)
-		}
-		running, err := kl.isPodRunning(pod, dockerContainers)
-		if err != nil {
-			return fmt.Errorf("failed to check pod status: %v", err)
-		}
-		if running {
-			glog.Infof("pod %q containers running", pod.Name)
-			return nil
-		}
-		glog.Infof("pod %q containers not running: syncing", pod.Name)
-		if err = kl.syncPod(&pod, dockerContainers); err != nil {
-			return fmt.Errorf("error syncing pod: %v", err)
-		}
-		if retry >= RunOnceMaxRetries {
-			return fmt.Errorf("timeout error: pod %q containers not running after %d retries", pod.Name, RunOnceMaxRetries)
-		}
-		// TODO(proppy): health checking would be better than waiting + checking the state at the next iteration.
-		glog.Infof("pod %q containers synced, waiting for %v", pod.Name, delay)
-		<-time.After(delay)
-		retry++
-		delay *= RunOnceRetryDelayBackoff
-	}
+	return fmt.Errorf("not implemented")
+	//delay := RunOnceRetryDelay
+	//retry := 0
+	//
+	//for {
+	//	dockerContainers, err := dockertools.GetKubeletDockerContainers(kl.dockerClient, false)
+	//	if err != nil {
+	//		return fmt.Errorf("failed to get kubelet docker containers: %v", err)
+	//	}
+	//	running, err := kl.isPodRunning(pod, dockerContainers)
+	//	if err != nil {
+	//		return fmt.Errorf("failed to check pod status: %v", err)
+	//	}
+	//	if running {
+	//		glog.Infof("pod %q containers running", pod.Name)
+	//		return nil
+	//	}
+	//	glog.Infof("pod %q containers not running: syncing", pod.Name)
+	//	if err = kl.syncPod(&pod, dockerContainers); err != nil {
+	//		return fmt.Errorf("error syncing pod: %v", err)
+	//	}
+	//	if retry >= RunOnceMaxRetries {
+	//		return fmt.Errorf("timeout error: pod %q containers not running after %d retries", pod.Name, RunOnceMaxRetries)
+	//	}
+	//	// TODO(proppy): health checking would be better than waiting + checking the state at the next iteration.
+	//	glog.Infof("pod %q containers synced, waiting for %v", pod.Name, delay)
+	//	<-time.After(delay)
+	//	retry++
+	//	delay *= RunOnceRetryDelayBackoff
+	//}
 }
 
 // isPodRunning returns true if all containers of a manifest are running.
