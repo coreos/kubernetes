@@ -94,6 +94,7 @@ type volumeMap map[string]volume.Interface
 // New creates a new Kubelet for use in main
 func NewMainKubelet(
 	hostname string,
+	containerRuntimeChoice string,
 	dockerClient dockertools.DockerInterface,
 	kubeClient client.Interface,
 	rootDirectory string,
@@ -156,6 +157,7 @@ func NewMainKubelet(
 	dockerClient = metrics.NewInstrumentedDockerInterface(dockerClient)
 	klet := &Kubelet{
 		hostname:                       hostname,
+		containerRuntimeChoice:         containerRuntimeChoice,
 		dockerClient:                   dockerClient,
 		kubeClient:                     kubeClient,
 		rootDirectory:                  rootDirectory,
@@ -197,7 +199,7 @@ func NewMainKubelet(
 		return nil, err
 	}
 	klet.dockerCache = dockerCache
-	klet.podWorkers = newPodWorkers(dockerCache, klet.syncPod, containerRuntimeCache, klet.syncRocketPod, recorder)
+	klet.podWorkers = newPodWorkers(klet.containerRuntimeChoice, dockerCache, klet.syncPod, containerRuntimeCache, klet.syncRocketPod, recorder)
 
 	metrics.Register(dockerCache)
 
@@ -224,6 +226,7 @@ type serviceLister interface {
 // Kubelet is the main kubelet implementation.
 type Kubelet struct {
 	hostname               string
+	containerRuntimeChoice string
 	containerRuntime       container.Runtime
 	containerRuntimeCache  container.RuntimeCache
 	dockerClient           dockertools.DockerInterface
@@ -1357,6 +1360,9 @@ func (kl *Kubelet) cleanupOrphanedVolumes(pods []api.BoundPod, running []*docker
 
 // SyncPods synchronizes the configured list of pods (desired state) with the host current state.
 func (kl *Kubelet) SyncPods(allPods []api.BoundPod, podSyncTypes map[types.UID]metrics.SyncPodType, start time.Time) error {
+	if kl.containerRuntimeChoice == "rocket" {
+		return kl.SyncRocketPods(allPods, podSyncTypes, start)
+	}
 	defer func() {
 		metrics.SyncPodsLatency.Observe(metrics.SinceInMicroseconds(start))
 	}()
