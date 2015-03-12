@@ -139,8 +139,10 @@ func (c *testClient) ValidateCommon(t *testing.T, err error) {
 		validator, ok := c.QueryValidator[key]
 		if !ok {
 			switch key {
-			case "labels", "fields":
+			case "labels":
 				validator = validateLabels
+			case "fields":
+				validator = validateFields
 			default:
 				validator = func(a, b string) bool { return a == b }
 			}
@@ -227,6 +229,18 @@ func TestListPods(t *testing.T) {
 }
 
 func validateLabels(a, b string) bool {
+	sA, eA := labels.Parse(a)
+	if eA != nil {
+		return false
+	}
+	sB, eB := labels.Parse(b)
+	if eB != nil {
+		return false
+	}
+	return sA.String() == sB.String()
+}
+
+func validateFields(a, b string) bool {
 	sA, _ := labels.ParseSelector(a)
 	sB, _ := labels.ParseSelector(b)
 	return sA.String() == sB.String()
@@ -729,9 +743,6 @@ func TestCreateMinion(t *testing.T) {
 	requestMinion := &api.Node{
 		ObjectMeta: api.ObjectMeta{
 			Name: "minion-1",
-		},
-		Status: api.NodeStatus{
-			HostIP: "123.321.456.654",
 		},
 		Spec: api.NodeSpec{
 			Capacity: api.ResourceList{

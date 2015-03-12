@@ -17,6 +17,7 @@ limitations under the License.
 package kubelet
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,24 +33,33 @@ import (
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/latest"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/resource"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/healthz"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/httplog"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/types"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util/httpstream"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util/httpstream/spdy"
 	"github.com/golang/glog"
-	"github.com/google/cadvisor/info"
+	cadvisorApi "github.com/google/cadvisor/info/v1"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Server is a http.Handler which exposes kubelet functionality over HTTP.
 type Server struct {
-	host HostInterface
-	mux  *http.ServeMux
+	host        HostInterface
+	mux         *http.ServeMux
+	machineInfo *cadvisorApi.MachineInfo
+}
+
+type TLSOptions struct {
+	Config   *tls.Config
+	CertFile string
+	KeyFile  string
 }
 
 // ListenAndServeKubeletServer initializes a server to respond to HTTP network requests on the Kubelet.
-func ListenAndServeKubeletServer(host HostInterface, address net.IP, port uint, enableDebuggingHandlers bool) {
+func ListenAndServeKubeletServer(host HostInterface, address net.IP, port uint, tlsOptions *TLSOptions, enableDebuggingHandlers bool) {
 	glog.V(1).Infof("Starting to listen on %s:%d", address, port)
 	handler := NewServer(host, enableDebuggingHandlers)
 	s := &http.Server{
@@ -59,16 +69,21 @@ func ListenAndServeKubeletServer(host HostInterface, address net.IP, port uint, 
 		WriteTimeout:   5 * time.Minute,
 		MaxHeaderBytes: 1 << 20,
 	}
-	glog.Fatal(s.ListenAndServe())
+	if tlsOptions != nil {
+		s.TLSConfig = tlsOptions.Config
+		glog.Fatal(s.ListenAndServeTLS(tlsOptions.CertFile, tlsOptions.KeyFile))
+	} else {
+		glog.Fatal(s.ListenAndServe())
+	}
 }
 
 // HostInterface contains all the kubelet methods required by the server.
 // For testablitiy.
 type HostInterface interface {
-	GetContainerInfo(podFullName string, uid types.UID, containerName string, req *info.ContainerInfoRequest) (*info.ContainerInfo, error)
-	GetRootInfo(req *info.ContainerInfoRequest) (*info.ContainerInfo, error)
+	GetContainerInfo(podFullName string, uid types.UID, containerName string, req *cadvisorApi.ContainerInfoRequest) (*cadvisorApi.ContainerInfo, error)
+	GetRootInfo(req *cadvisorApi.ContainerInfoRequest) (*cadvisorApi.ContainerInfo, error)
 	GetDockerVersion() ([]uint, error)
-	GetMachineInfo() (*info.MachineInfo, error)
+	GetMachineInfo() (*cadvisorApi.MachineInfo, error)
 	GetBoundPods() ([]api.BoundPod, error)
 	GetPodByName(namespace, name string) (*api.BoundPod, bool)
 	GetPodStatus(name string, uid types.UID) (api.PodStatus, error)
@@ -78,6 +93,7 @@ type HostInterface interface {
 	ServeLogs(w http.ResponseWriter, req *http.Request)
 	PortForward(name string, uid types.UID, port uint16, stream io.ReadWriteCloser) error
 	StreamingConnectionIdleTimeout() time.Duration
+	GetHostname() string
 }
 
 // NewServer initializes and configures a kubelet.Server object to handle HTTP requests.
@@ -95,9 +111,12 @@ func NewServer(host HostInterface, enableDebuggingHandlers bool) Server {
 
 // InstallDefaultHandlers registers the default set of supported HTTP request patterns with the mux.
 func (s *Server) InstallDefaultHandlers() {
-	s.mux.HandleFunc("/healthz", s.handleHealthz)
+	healthz.AddHealthzFunc("docker", s.dockerHealthCheck)
+	healthz.AddHealthzFunc("hostname", s.hostnameHealthCheck)
+	healthz.InstallHandler(s.mux)
 	s.mux.HandleFunc("/podInfo", s.handlePodInfoOld)
 	s.mux.HandleFunc("/api/v1beta1/podInfo", s.handlePodInfoVersioned)
+	s.mux.HandleFunc("/api/v1beta1/nodeInfo", s.handleNodeInfoVersioned)
 	s.mux.HandleFunc("/boundPods", s.handleBoundPods)
 	s.mux.HandleFunc("/stats/", s.handleStats)
 	s.mux.HandleFunc("/spec/", s.handleSpec)
@@ -116,7 +135,9 @@ func (s *Server) InstallDebuggingHandlers() {
 
 // error serializes an error object into an HTTP response.
 func (s *Server) error(w http.ResponseWriter, err error) {
-	http.Error(w, fmt.Sprintf("Internal Error: %v", err), http.StatusInternalServerError)
+	msg := fmt.Sprintf("Internal Error: %v", err)
+	glog.Infof("HTTP InternalServerError: %s", msg)
+	http.Error(w, msg, http.StatusInternalServerError)
 }
 
 func isValidDockerVersion(ver []uint) (bool, string) {
@@ -136,19 +157,35 @@ func isValidDockerVersion(ver []uint) (bool, string) {
 	return true, ""
 }
 
-// handleHealthz handles /healthz request and checks Docker version
-func (s *Server) handleHealthz(w http.ResponseWriter, req *http.Request) {
+func (s *Server) dockerHealthCheck(req *http.Request) error {
 	versions, err := s.host.GetDockerVersion()
 	if err != nil {
-		s.error(w, errors.New("unknown Docker version"))
-		return
+		return errors.New("unknown Docker version")
 	}
 	valid, version := isValidDockerVersion(versions)
 	if !valid {
-		s.error(w, errors.New("Docker version is too old ("+version+")"))
-		return
+		return fmt.Errorf("Docker version is too old (%v)", version)
 	}
-	w.Write([]byte("ok"))
+	return nil
+}
+
+func (s *Server) hostnameHealthCheck(req *http.Request) error {
+	masterHostname, _, err := net.SplitHostPort(req.Host)
+	if err != nil {
+		if !strings.Contains(req.Host, ":") {
+			masterHostname = req.Host
+		} else {
+			return fmt.Errorf("Could not parse hostname from http request: %v", err)
+		}
+	}
+
+	// Check that the hostname known by the master matches the hostname
+	// the kubelet knows
+	hostname := s.host.GetHostname()
+	if masterHostname != hostname && masterHostname != "127.0.0.1" && masterHostname != "localhost" {
+		return fmt.Errorf("Kubelet hostname \"%v\" does not match the hostname expected by the master \"%v\"", hostname, masterHostname)
+	}
+	return nil
 }
 
 // handleContainerLogs handles containerLogs request against the Kubelet
@@ -295,9 +332,51 @@ func (s *Server) handleLogs(w http.ResponseWriter, req *http.Request) {
 	s.host.ServeLogs(w, req)
 }
 
+// getCachedMachineInfo assumes that the machine info can't change without a reboot
+func (s *Server) getCachedMachineInfo() (*cadvisorApi.MachineInfo, error) {
+	if s.machineInfo == nil {
+		info, err := s.host.GetMachineInfo()
+		if err != nil {
+			return nil, err
+		}
+		s.machineInfo = info
+	}
+	return s.machineInfo, nil
+}
+
+// handleNodeInfoVersioned handles node info requests against the Kubelet.
+func (s *Server) handleNodeInfoVersioned(w http.ResponseWriter, req *http.Request) {
+	info, err := s.getCachedMachineInfo()
+	if err != nil {
+		s.error(w, err)
+		return
+	}
+	capacity := api.ResourceList{
+		api.ResourceCPU: *resource.NewMilliQuantity(
+			int64(info.NumCores*1000),
+			resource.DecimalSI),
+		api.ResourceMemory: *resource.NewQuantity(
+			info.MemoryCapacity,
+			resource.BinarySI),
+	}
+	data, err := json.Marshal(api.NodeInfo{
+		Capacity: capacity,
+		NodeSystemInfo: api.NodeSystemInfo{
+			MachineID:  info.MachineID,
+			SystemUUID: info.SystemUUID,
+		},
+	})
+	if err != nil {
+		s.error(w, err)
+		return
+	}
+	w.Header().Add("Content-type", "application/json")
+	w.Write(data)
+}
+
 // handleSpec handles spec requests against the Kubelet.
 func (s *Server) handleSpec(w http.ResponseWriter, req *http.Request) {
-	info, err := s.host.GetMachineInfo()
+	info, err := s.getCachedMachineInfo()
 	if err != nil {
 		s.error(w, err)
 		return
@@ -599,9 +678,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func (s *Server) serveStats(w http.ResponseWriter, req *http.Request) {
 	// /stats/<podfullname>/<containerName> or /stats/<namespace>/<podfullname>/<uid>/<containerName>
 	components := strings.Split(strings.TrimPrefix(path.Clean(req.URL.Path), "/"), "/")
-	var stats *info.ContainerInfo
+	var stats *cadvisorApi.ContainerInfo
 	var err error
-	var query info.ContainerInfoRequest
+	var query cadvisorApi.ContainerInfoRequest
 	err = json.NewDecoder(req.Body).Decode(&query)
 	if err != nil && err != io.EOF {
 		s.error(w, err)

@@ -36,6 +36,7 @@ func init() {
 	newer.Scheme.AddStructFieldConversion(newer.TypeMeta{}, "TypeMeta", TypeMeta{}, "TypeMeta")
 	newer.Scheme.AddStructFieldConversion(newer.ObjectMeta{}, "ObjectMeta", TypeMeta{}, "TypeMeta")
 	newer.Scheme.AddStructFieldConversion(newer.ListMeta{}, "ListMeta", TypeMeta{}, "TypeMeta")
+	newer.Scheme.AddStructFieldConversion(newer.Endpoints{}, "Endpoints", Endpoints{}, "Endpoints")
 
 	// TODO: scope this to a specific type once that becomes available and remove the Event conversion functions below
 	// newer.Scheme.AddStructFieldConversion(string(""), "Status", string(""), "Condition")
@@ -696,9 +697,20 @@ func init() {
 			if err := s.Convert(&in.Status.Conditions, &out.Status.Conditions, 0); err != nil {
 				return err
 			}
+			if err := s.Convert(&in.Status.Addresses, &out.Status.Addresses, 0); err != nil {
+				return err
+			}
+			if err := s.Convert(&in.Status.NodeInfo, &out.Status.NodeInfo, 0); err != nil {
+				return err
+			}
 
-			out.HostIP = in.Status.HostIP
+			for _, address := range in.Status.Addresses {
+				if address.Type == newer.NodeLegacyHostIP {
+					out.HostIP = address.Address
+				}
+			}
 			out.PodCIDR = in.Spec.PodCIDR
+			out.ExternalID = in.Spec.ExternalID
 			return s.Convert(&in.Spec.Capacity, &out.NodeResources.Capacity, 0)
 		},
 		func(in *Minion, out *newer.Node, s conversion.Scope) error {
@@ -717,11 +729,22 @@ func init() {
 			if err := s.Convert(&in.Status.Conditions, &out.Status.Conditions, 0); err != nil {
 				return err
 			}
+			if err := s.Convert(&in.Status.Addresses, &out.Status.Addresses, 0); err != nil {
+				return err
+			}
+			if err := s.Convert(&in.Status.NodeInfo, &out.Status.NodeInfo, 0); err != nil {
+				return err
+			}
 
-			out.Status.HostIP = in.HostIP
+			if in.HostIP != "" {
+				newer.AddToNodeAddresses(&out.Status.Addresses,
+					newer.NodeAddress{Type: newer.NodeLegacyHostIP, Address: in.HostIP})
+			}
 			out.Spec.PodCIDR = in.PodCIDR
+			out.Spec.ExternalID = in.ExternalID
 			return s.Convert(&in.NodeResources.Capacity, &out.Spec.Capacity, 0)
 		},
+
 		func(in *newer.LimitRange, out *LimitRange, s conversion.Scope) error {
 			if err := s.Convert(&in.TypeMeta, &out.TypeMeta, 0); err != nil {
 				return err
@@ -746,6 +769,7 @@ func init() {
 			}
 			return nil
 		},
+
 		func(in *Namespace, out *newer.Namespace, s conversion.Scope) error {
 			if err := s.Convert(&in.TypeMeta, &out.TypeMeta, 0); err != nil {
 				return err
@@ -756,11 +780,15 @@ func init() {
 			if err := s.Convert(&in.Spec, &out.Spec, 0); err != nil {
 				return err
 			}
+			if err := s.Convert(&in.Status, &out.Status, 0); err != nil {
+				return err
+			}
 			if err := s.Convert(&in.Labels, &out.ObjectMeta.Labels, 0); err != nil {
 				return err
 			}
 			return nil
 		},
+
 		func(in *newer.LimitRangeSpec, out *LimitRangeSpec, s conversion.Scope) error {
 			*out = LimitRangeSpec{}
 			out.Limits = make([]LimitRangeItem, len(in.Limits), len(in.Limits))
@@ -781,6 +809,7 @@ func init() {
 			}
 			return nil
 		},
+
 		func(in *newer.LimitRangeItem, out *LimitRangeItem, s conversion.Scope) error {
 			*out = LimitRangeItem{}
 			out.Type = LimitType(in.Type)
@@ -803,6 +832,7 @@ func init() {
 			}
 			return nil
 		},
+
 		func(in *newer.ResourceQuota, out *ResourceQuota, s conversion.Scope) error {
 			if err := s.Convert(&in.TypeMeta, &out.TypeMeta, 0); err != nil {
 				return err
@@ -833,6 +863,7 @@ func init() {
 			}
 			return nil
 		},
+
 		func(in *newer.ResourceQuotaUsage, out *ResourceQuotaUsage, s conversion.Scope) error {
 			if err := s.Convert(&in.TypeMeta, &out.TypeMeta, 0); err != nil {
 				return err
@@ -857,6 +888,7 @@ func init() {
 			}
 			return nil
 		},
+
 		func(in *newer.ResourceQuotaSpec, out *ResourceQuotaSpec, s conversion.Scope) error {
 			*out = ResourceQuotaSpec{}
 			if err := s.Convert(&in.Hard, &out.Hard, 0); err != nil {
@@ -871,6 +903,7 @@ func init() {
 			}
 			return nil
 		},
+
 		func(in *newer.ResourceQuotaStatus, out *ResourceQuotaStatus, s conversion.Scope) error {
 			*out = ResourceQuotaStatus{}
 			if err := s.Convert(&in.Hard, &out.Hard, 0); err != nil {
@@ -891,6 +924,7 @@ func init() {
 			}
 			return nil
 		},
+
 		// Object ID <-> Name
 		// TODO: amend the conversion package to allow overriding specific fields.
 		func(in *ObjectReference, out *newer.ObjectReference, s conversion.Scope) error {
@@ -1014,6 +1048,21 @@ func init() {
 			return nil
 		},
 
+		func(in *newer.Volume, out *Volume, s conversion.Scope) error {
+			if err := s.Convert(&in.VolumeSource, &out.Source, 0); err != nil {
+				return err
+			}
+			out.Name = in.Name
+			return nil
+		},
+		func(in *Volume, out *newer.Volume, s conversion.Scope) error {
+			if err := s.Convert(&in.Source, &out.VolumeSource, 0); err != nil {
+				return err
+			}
+			out.Name = in.Name
+			return nil
+		},
+
 		// VolumeSource's HostDir is deprecated in favor of HostPath.
 		// TODO: It would be great if I could just map field names to
 		// convert or else maybe say "convert all members of this
@@ -1116,6 +1165,7 @@ func init() {
 			out.TimeoutSeconds = in.TimeoutSeconds
 			return nil
 		},
+
 		func(in *newer.Endpoints, out *Endpoints, s conversion.Scope) error {
 			if err := s.Convert(&in.TypeMeta, &out.TypeMeta, 0); err != nil {
 				return err
@@ -1128,7 +1178,17 @@ func init() {
 			}
 			for i := range in.Endpoints {
 				ep := &in.Endpoints[i]
-				out.Endpoints = append(out.Endpoints, net.JoinHostPort(ep.IP, strconv.Itoa(ep.Port)))
+				hostPort := net.JoinHostPort(ep.IP, strconv.Itoa(ep.Port))
+				out.Endpoints = append(out.Endpoints, hostPort)
+				if ep.TargetRef != nil {
+					target := EndpointObjectReference{
+						Endpoint: hostPort,
+					}
+					if err := s.Convert(ep.TargetRef, &target.ObjectReference, 0); err != nil {
+						return err
+					}
+					out.TargetRefs = append(out.TargetRefs, target)
+				}
 			}
 			return nil
 		},
@@ -1155,6 +1215,15 @@ func init() {
 					return err
 				}
 				ep.Port = pn
+				for j := range in.TargetRefs {
+					if in.TargetRefs[j].Endpoint != in.Endpoints[i] {
+						continue
+					}
+					ep.TargetRef = &newer.ObjectReference{}
+					if err := s.Convert(&in.TargetRefs[j].ObjectReference, ep.TargetRef, 0); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		},
@@ -1284,7 +1353,47 @@ func init() {
 
 			return nil
 		},
+		func(in *Binding, out *newer.Binding, s conversion.Scope) error {
+			if err := s.DefaultConvert(in, out, conversion.IgnoreMissingFields); err != nil {
+				return err
+			}
+			out.Target = newer.ObjectReference{
+				Name: in.Host,
+			}
+			out.Name = in.PodID
+			return nil
+		},
+		func(in *newer.Binding, out *Binding, s conversion.Scope) error {
+			if err := s.DefaultConvert(in, out, conversion.IgnoreMissingFields); err != nil {
+				return err
+			}
+			out.Host = in.Target.Name
+			out.PodID = in.Name
+			return nil
+		},
 	)
+	if err != nil {
+		// If one of the conversion functions is malformed, detect it immediately.
+		panic(err)
+	}
+
+	// Add field conversion funcs.
+	err = newer.Scheme.AddFieldLabelConversionFunc("v1beta1", "pods",
+		func(label, value string) (string, string, error) {
+			switch label {
+			case "name":
+				return "name", value, nil
+			case "DesiredState.Host":
+				return "status.host", value, nil
+			case "DesiredState.Status":
+				podStatus := PodStatus(value)
+				var internalValue newer.PodPhase
+				newer.Scheme.Convert(&podStatus, &internalValue)
+				return "status.phase", string(internalValue), nil
+			default:
+				return "", "", fmt.Errorf("field label not supported: %s", label)
+			}
+		})
 	if err != nil {
 		// If one of the conversion functions is malformed, detect it immediately.
 		panic(err)

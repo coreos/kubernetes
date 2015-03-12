@@ -65,6 +65,7 @@ function create-provision-scripts {
   (
     echo "#! /bin/bash"
     echo "KUBE_ROOT=/vagrant"
+    echo "INSTANCE_PREFIX='${INSTANCE_PREFIX}'"
     echo "MASTER_NAME='${INSTANCE_PREFIX}-master'"
     echo "MASTER_IP='${MASTER_IP}'"
     echo "MINION_NAMES=(${MINION_NAMES[@]})"
@@ -87,6 +88,7 @@ function create-provision-scripts {
     echo "DNS_DOMAIN='${DNS_DOMAIN:-}'"
     echo "DNS_REPLICAS='${DNS_REPLICAS:-}'"
     echo "RUNTIME_CONFIG='${RUNTIME_CONFIG:-}'"
+    echo "ADMISSION_CONTROL='${ADMISSION_CONTROL:-}'"
     grep -v "^#" "${KUBE_ROOT}/cluster/vagrant/provision-master.sh"
     grep -v "^#" "${KUBE_ROOT}/cluster/vagrant/provision-network.sh"
   ) > "${KUBE_TEMP}/master-start.sh"
@@ -329,14 +331,6 @@ function restart-kube-proxy {
 # Restart the apiserver
 function restart-apiserver {
   ssh-to-node "$1" "sudo systemctl restart kube-apiserver"
-}
-
-function setup-monitoring-firewall {
-  echo "TODO" 1>&2
-}
-
-function teardown-monitoring-firewall {
-  echo "TODO" 1>&2
 }
 
 # Perform preparations required to run e2e tests

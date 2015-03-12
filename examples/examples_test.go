@@ -98,14 +98,11 @@ func walkJSONFiles(inDir string, fn func(name, path string, data []byte)) error 
 
 func TestExampleObjectSchemas(t *testing.T) {
 	cases := map[string]map[string]runtime.Object{
-		"../api/examples": {
-			"controller":       &api.ReplicationController{},
-			"controller-list":  &api.ReplicationControllerList{},
-			"pod":              &api.Pod{},
-			"pod-list":         &api.PodList{},
-			"service":          &api.Service{},
-			"external-service": &api.Service{},
-			"service-list":     &api.ServiceList{},
+		"../docs/getting-started-guides": {
+			"pod": &api.Pod{},
+		},
+		"../cmd/integration": {
+			"controller": &api.ReplicationController{},
 		},
 		"../examples/guestbook": {
 			"frontend-controller":     &api.ReplicationController{},
@@ -146,7 +143,11 @@ func TestExampleObjectSchemas(t *testing.T) {
 			"service":                   &api.Service{},
 			"replication-controller":    &api.ReplicationController{},
 		},
-		"../examples/update-demo": {
+		"../examples/update-demo/v1beta1": {
+			"kitten-rc":   &api.ReplicationController{},
+			"nautilus-rc": &api.ReplicationController{},
+		},
+		"../examples/update-demo/v1beta3": {
 			"kitten-rc":   &api.ReplicationController{},
 			"nautilus-rc": &api.ReplicationController{},
 		},

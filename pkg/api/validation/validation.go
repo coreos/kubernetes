@@ -30,7 +30,6 @@ import (
 	"github.com/golang/glog"
 )
 
-const qualifiedNameErrorMsg string = "must match regex [" + util.DNS1123SubdomainFmt + " / ] " + util.DNS1123LabelFmt
 const cIdentifierErrorMsg string = "must match regex " + util.CIdentifierFmt
 const isNegativeErrorMsg string = "value must not be negative"
 
@@ -38,18 +37,25 @@ func intervalErrorMsg(lo, hi int) string {
 	return fmt.Sprintf("must be greater than %d and less than %d", lo, hi)
 }
 
+var labelValueErrorMsg string = fmt.Sprintf("must have at most %d characters and match regex %s", util.LabelValueMaxLength, util.LabelValueFmt)
+var qualifiedNameErrorMsg string = fmt.Sprintf("must have at most %d characters and match regex %s", util.DNS1123SubdomainMaxLength, util.QualifiedNameFmt)
 var dnsSubdomainErrorMsg string = fmt.Sprintf("must have at most %d characters and match regex %s", util.DNS1123SubdomainMaxLength, util.DNS1123SubdomainFmt)
 var dnsLabelErrorMsg string = fmt.Sprintf("must have at most %d characters and match regex %s", util.DNS1123LabelMaxLength, util.DNS1123LabelFmt)
 var dns952LabelErrorMsg string = fmt.Sprintf("must have at most %d characters and match regex %s", util.DNS952LabelMaxLength, util.DNS952LabelFmt)
 var pdPartitionErrorMsg string = intervalErrorMsg(0, 255)
 var portRangeErrorMsg string = intervalErrorMsg(0, 65536)
 
+const totalAnnotationSizeLimitB int = 64 * (1 << 10) // 64 kB
+
 // ValidateLabels validates that a set of labels are correctly defined.
 func ValidateLabels(labels map[string]string, field string) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
-	for k := range labels {
+	for k, v := range labels {
 		if !util.IsQualifiedName(k) {
 			allErrs = append(allErrs, errs.NewFieldInvalid(field, k, qualifiedNameErrorMsg))
+		}
+		if !util.IsValidLabelValue(v) {
+			allErrs = append(allErrs, errs.NewFieldInvalid(field, v, labelValueErrorMsg))
 		}
 	}
 	return allErrs
@@ -58,10 +64,18 @@ func ValidateLabels(labels map[string]string, field string) errs.ValidationError
 // ValidateAnnotations validates that a set of annotations are correctly defined.
 func ValidateAnnotations(annotations map[string]string, field string) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
-	for k := range annotations {
+	var totalSize int64
+	for k, v := range annotations {
 		if !util.IsQualifiedName(strings.ToLower(k)) {
 			allErrs = append(allErrs, errs.NewFieldInvalid(field, k, qualifiedNameErrorMsg))
 		}
+		if !util.IsValidAnnotationValue(v) {
+			allErrs = append(allErrs, errs.NewFieldInvalid(field, k, ""))
+		}
+		totalSize += (int64)(len(k)) + (int64)(len(v))
+	}
+	if totalSize > (int64)(totalAnnotationSizeLimitB) {
+		allErrs = append(allErrs, errs.NewFieldTooLong("annotations", ""))
 	}
 	return allErrs
 }
@@ -205,7 +219,10 @@ func ValidateObjectMetaUpdate(old, meta *api.ObjectMeta) errs.ValidationErrorLis
 	if len(meta.UID) == 0 {
 		meta.UID = old.UID
 	}
-	if meta.CreationTimestamp.IsZero() {
+	// ignore changes to timestamp
+	if old.CreationTimestamp.IsZero() {
+		old.CreationTimestamp = meta.CreationTimestamp
+	} else {
 		meta.CreationTimestamp = old.CreationTimestamp
 	}
 
@@ -233,7 +250,7 @@ func validateVolumes(volumes []api.Volume) (util.StringSet, errs.ValidationError
 
 	allNames := util.StringSet{}
 	for i, vol := range volumes {
-		el := validateSource(&vol.Source).Prefix("source")
+		el := validateSource(&vol.VolumeSource).Prefix("source")
 		if len(vol.Name) == 0 {
 			el = append(el, errs.NewFieldRequired("name", vol.Name))
 		} else if !util.IsDNSLabel(vol.Name) {
@@ -325,7 +342,7 @@ func validateSecretVolumeSource(secretSource *api.SecretVolumeSource) errs.Valid
 
 var supportedPortProtocols = util.NewStringSet(string(api.ProtocolTCP), string(api.ProtocolUDP))
 
-func validatePorts(ports []api.Port) errs.ValidationErrorList {
+func validatePorts(ports []api.ContainerPort) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
 
 	allNames := util.StringSet{}
@@ -410,7 +427,7 @@ func validateProbe(probe *api.Probe) errs.ValidationErrorList {
 
 // AccumulateUniquePorts runs an extraction function on each Port of each Container,
 // accumulating the results and returning an error if any ports conflict.
-func AccumulateUniquePorts(containers []api.Container, accumulator map[int]bool, extract func(*api.Port) int) errs.ValidationErrorList {
+func AccumulateUniquePorts(containers []api.Container, accumulator map[int]bool, extract func(*api.ContainerPort) int) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
 
 	for ci, ctr := range containers {
@@ -435,7 +452,7 @@ func AccumulateUniquePorts(containers []api.Container, accumulator map[int]bool,
 // a slice of containers.
 func checkHostPortConflicts(containers []api.Container) errs.ValidationErrorList {
 	allPorts := map[int]bool{}
-	return AccumulateUniquePorts(containers, allPorts, func(p *api.Port) int { return p.HostPort })
+	return AccumulateUniquePorts(containers, allPorts, func(p *api.ContainerPort) int { return p.HostPort })
 }
 
 func validateExecAction(exec *api.ExecAction) errs.ValidationErrorList {
@@ -451,6 +468,21 @@ func validateHTTPGetAction(http *api.HTTPGetAction) errs.ValidationErrorList {
 	if len(http.Path) == 0 {
 		allErrors = append(allErrors, errs.NewFieldRequired("path", http.Path))
 	}
+	if http.Port.Kind == util.IntstrInt && !util.IsValidPortNum(http.Port.IntVal) {
+		allErrors = append(allErrors, errs.NewFieldInvalid("port", http.Port, portRangeErrorMsg))
+	} else if http.Port.Kind == util.IntstrString && len(http.Port.StrVal) == 0 {
+		allErrors = append(allErrors, errs.NewFieldRequired("port", http.Port.StrVal))
+	}
+	return allErrors
+}
+
+func validateTCPSocketAction(tcp *api.TCPSocketAction) errs.ValidationErrorList {
+	allErrors := errs.ValidationErrorList{}
+	if tcp.Port.Kind == util.IntstrInt && !util.IsValidPortNum(tcp.Port.IntVal) {
+		allErrors = append(allErrors, errs.NewFieldInvalid("port", tcp.Port, portRangeErrorMsg))
+	} else if tcp.Port.Kind == util.IntstrString && len(tcp.Port.StrVal) == 0 {
+		allErrors = append(allErrors, errs.NewFieldRequired("port", tcp.Port.StrVal))
+	}
 	return allErrors
 }
 
@@ -464,6 +496,10 @@ func validateHandler(handler *api.Handler) errs.ValidationErrorList {
 	if handler.HTTPGet != nil {
 		numHandlers++
 		allErrors = append(allErrors, validateHTTPGetAction(handler.HTTPGet).Prefix("httpGet")...)
+	}
+	if handler.TCPSocket != nil {
+		numHandlers++
+		allErrors = append(allErrors, validateTCPSocketAction(handler.TCPSocket).Prefix("tcpSocket")...)
 	}
 	if numHandlers != 1 {
 		allErrors = append(allErrors, errs.NewFieldInvalid("", handler, "exactly 1 handler type is required"))
@@ -647,6 +683,23 @@ func ValidatePodUpdate(newPod, oldPod *api.Pod) errs.ValidationErrorList {
 	return allErrs
 }
 
+// ValidatePodStatusUpdate tests to see if the update is legal for an end user to make. newPod is updated with fields
+// that cannot be changed.
+func ValidatePodStatusUpdate(newPod, oldPod *api.Pod) errs.ValidationErrorList {
+	allErrs := errs.ValidationErrorList{}
+
+	allErrs = append(allErrs, ValidateObjectMetaUpdate(&oldPod.ObjectMeta, &newPod.ObjectMeta).Prefix("metadata")...)
+
+	// TODO: allow change when bindings are properly decoupled from pods
+	if newPod.Status.Host != oldPod.Status.Host {
+		allErrs = append(allErrs, errs.NewFieldInvalid("status.host", newPod.Status.Host, "pod host cannot be changed directly"))
+	}
+
+	newPod.Spec = oldPod.Spec
+
+	return allErrs
+}
+
 var supportedSessionAffinityType = util.NewStringSet(string(api.AffinityTypeClientIP), string(api.AffinityTypeNone))
 
 // ValidateService tests if required fields in the service are set.
@@ -661,6 +714,11 @@ func ValidateService(service *api.Service) errs.ValidationErrorList {
 		allErrs = append(allErrs, errs.NewFieldRequired("spec.protocol", service.Spec.Protocol))
 	} else if !supportedPortProtocols.Has(strings.ToUpper(string(service.Spec.Protocol))) {
 		allErrs = append(allErrs, errs.NewFieldNotSupported("spec.protocol", service.Spec.Protocol))
+	}
+	if service.Spec.ContainerPort.Kind == util.IntstrInt && service.Spec.ContainerPort.IntVal != 0 && !util.IsValidPortNum(service.Spec.ContainerPort.IntVal) {
+		allErrs = append(allErrs, errs.NewFieldInvalid("spec.containerPort", service.Spec.Port, portRangeErrorMsg))
+	} else if service.Spec.ContainerPort.Kind == util.IntstrString && len(service.Spec.ContainerPort.StrVal) == 0 {
+		allErrs = append(allErrs, errs.NewFieldRequired("spec.containerPort", service.Spec.ContainerPort.StrVal))
 	}
 
 	if service.Spec.Selector != nil {
@@ -752,8 +810,8 @@ func ValidatePodTemplateSpec(spec *api.PodTemplateSpec, replicas int) errs.Valid
 func ValidateReadOnlyPersistentDisks(volumes []api.Volume) errs.ValidationErrorList {
 	allErrs := errs.ValidationErrorList{}
 	for _, vol := range volumes {
-		if vol.Source.GCEPersistentDisk != nil {
-			if vol.Source.GCEPersistentDisk.ReadOnly == false {
+		if vol.GCEPersistentDisk != nil {
+			if vol.GCEPersistentDisk.ReadOnly == false {
 				allErrs = append(allErrs, errs.NewFieldInvalid("GCEPersistentDisk.ReadOnly", false, "ReadOnly must be true for replicated pods > 1, as GCE PD can only be mounted on multiple machines if it is read-only."))
 			}
 		}

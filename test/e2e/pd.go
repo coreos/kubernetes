@@ -47,7 +47,7 @@ var _ = Describe("PD", func() {
 
 		nodes, err := c.Nodes().List()
 		expectNoError(err, "Failed to list nodes for e2e cluster.")
-		Expect(len(nodes.Items) >= 2)
+		Expect(len(nodes.Items) >= 2).To(BeTrue())
 
 		diskName = fmt.Sprintf("e2e-%s", string(util.NewUUID()))
 		host0Name = nodes.Items[0].ObjectMeta.Name
@@ -55,10 +55,16 @@ var _ = Describe("PD", func() {
 	})
 
 	It("should schedule a pod w/ a RW PD, remove it, then schedule it on another host", func() {
+		if testContext.provider != "gce" {
+			By(fmt.Sprintf("Skipping PD test, which is only supported for provider gce (not %s)",
+				testContext.provider))
+			return
+		}
+
 		host0Pod := testPDPod(diskName, host0Name, false)
 		host1Pod := testPDPod(diskName, host1Name, false)
 
-		By("creating PD")
+		By(fmt.Sprintf("creating PD %q", diskName))
 		expectNoError(createPD(diskName, testContext.gceConfig.Zone), "Error creating PD")
 
 		defer func() {
@@ -76,8 +82,7 @@ var _ = Describe("PD", func() {
 		_, err := podClient.Create(host0Pod)
 		expectNoError(err, fmt.Sprintf("Failed to create host0Pod: %v", err))
 
-		By("waiting up to 60 seconds for host0Pod to start running")
-		expectNoError(waitForPodRunning(c, host0Pod.Name, 60*time.Second), "host0Pod not running after 60 seconds")
+		expectNoError(waitForPodRunning(c, host0Pod.Name))
 
 		By("deleting host0Pod")
 		expectNoError(podClient.Delete(host0Pod.Name), "Failed to delete host0Pod")
@@ -86,16 +91,31 @@ var _ = Describe("PD", func() {
 		_, err = podClient.Create(host1Pod)
 		expectNoError(err, "Failed to create host1Pod")
 
-		By("waiting up to 60 seconds for host1Pod to start running")
-		expectNoError(waitForPodRunning(c, host1Pod.Name, 60*time.Second), "host1Pod not running after 60 seconds")
+		expectNoError(waitForPodRunning(c, host1Pod.Name))
 
 		By("deleting host1Pod")
 		expectNoError(podClient.Delete(host1Pod.Name), "Failed to delete host1Pod")
+
+		By(fmt.Sprintf("deleting PD %q", diskName))
+		for start := time.Now(); time.Since(start) < 180*time.Second; time.Sleep(5 * time.Second) {
+			if err = deletePD(diskName, testContext.gceConfig.Zone); err != nil {
+				Logf("Couldn't delete PD. Sleeping 5 seconds")
+				continue
+			}
+			break
+		}
+		expectNoError(err, "Error deleting PD")
 
 		return
 	})
 
 	It("should schedule a pod w/ a readonly PD on two hosts, then remove both.", func() {
+		if testContext.provider != "gce" {
+			By(fmt.Sprintf("Skipping PD test, which is only supported for provider gce (not %s)",
+				testContext.provider))
+			return
+		}
+
 		rwPod := testPDPod(diskName, host0Name, false)
 		host0ROPod := testPDPod(diskName, host0Name, true)
 		host1ROPod := testPDPod(diskName, host1Name, true)
@@ -112,13 +132,13 @@ var _ = Describe("PD", func() {
 			deletePD(diskName, testContext.gceConfig.Zone)
 		}()
 
-		By("creating PD")
+		By(fmt.Sprintf("creating PD %q", diskName))
 		expectNoError(createPD(diskName, testContext.gceConfig.Zone), "Error creating PD")
 
 		By("submitting rwPod to ensure PD is formatted")
 		_, err := podClient.Create(rwPod)
 		expectNoError(err, "Failed to create rwPod")
-		expectNoError(waitForPodRunning(c, rwPod.Name, 60*time.Second), "rwPod not running after 60 seconds")
+		expectNoError(waitForPodRunning(c, rwPod.Name))
 		expectNoError(podClient.Delete(rwPod.Name), "Failed to delete host0Pod")
 
 		By("submitting host0ROPod to kubernetes")
@@ -129,17 +149,25 @@ var _ = Describe("PD", func() {
 		_, err = podClient.Create(host1ROPod)
 		expectNoError(err, "Failed to create host1ROPod")
 
-		By("waiting up to 60 seconds for host0ROPod to start running")
-		expectNoError(waitForPodRunning(c, host0ROPod.Name, 60*time.Second), "host0ROPod not running after 60 seconds")
+		expectNoError(waitForPodRunning(c, host0ROPod.Name))
 
-		By("waiting up to 60 seconds for host1ROPod to start running")
-		expectNoError(waitForPodRunning(c, host1ROPod.Name, 60*time.Second), "host1ROPod not running after 60 seconds")
+		expectNoError(waitForPodRunning(c, host1ROPod.Name))
 
 		By("deleting host0ROPod")
 		expectNoError(podClient.Delete(host0ROPod.Name), "Failed to delete host0ROPod")
 
 		By("deleting host1ROPod")
 		expectNoError(podClient.Delete(host1ROPod.Name), "Failed to delete host1ROPod")
+
+		By(fmt.Sprintf("deleting PD %q", diskName))
+		for start := time.Now(); time.Since(start) < 180*time.Second; time.Sleep(5 * time.Second) {
+			if err = deletePD(diskName, testContext.gceConfig.Zone); err != nil {
+				Logf("Couldn't delete PD. Sleeping 5 seconds")
+				continue
+			}
+			break
+		}
+		expectNoError(err, "Error deleting PD")
 	})
 })
 
@@ -172,7 +200,7 @@ func testPDPod(diskName, targetHost string, readOnly bool) *api.Pod {
 			Volumes: []api.Volume{
 				{
 					Name: "testpd",
-					Source: api.VolumeSource{
+					VolumeSource: api.VolumeSource{
 						GCEPersistentDisk: &api.GCEPersistentDiskVolumeSource{
 							PDName:   diskName,
 							FSType:   "ext4",

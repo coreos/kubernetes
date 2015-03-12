@@ -18,6 +18,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"reflect"
 	"sort"
@@ -121,6 +122,10 @@ type FakeKubeletClient struct {
 
 func (c *FakeKubeletClient) GetPodStatus(host, podNamespace, podID string) (api.PodStatusResult, error) {
 	return api.PodStatusResult{}, errors.New("Not Implemented")
+}
+
+func (c *FakeKubeletClient) GetNodeInfo(host string) (api.NodeInfo, error) {
+	return api.NodeInfo{}, errors.New("Not Implemented")
 }
 
 func (c *FakeKubeletClient) HealthCheck(host string) (probe.Result, error) {
@@ -247,7 +252,7 @@ func TestRegisterNodes(t *testing.T) {
 	}
 }
 
-func TestCreateStaticNodes(t *testing.T) {
+func TestCreateGetStaticNodesWithSpec(t *testing.T) {
 	table := []struct {
 		machines      []string
 		expectedNodes *api.NodeList
@@ -289,7 +294,7 @@ func TestCreateStaticNodes(t *testing.T) {
 
 	for _, item := range table {
 		nodeController := NewNodeController(nil, "", item.machines, &api.NodeResources{}, nil, nil, 10, time.Minute)
-		nodes, err := nodeController.StaticNodes()
+		nodes, err := nodeController.GetStaticNodesWithSpec()
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -299,7 +304,7 @@ func TestCreateStaticNodes(t *testing.T) {
 	}
 }
 
-func TestCreateCloudNodes(t *testing.T) {
+func TestCreateGetCloudNodesWithSpec(t *testing.T) {
 	resourceList := api.ResourceList{
 		api.ResourceCPU:    *resource.NewMilliQuantity(1000, resource.DecimalSI),
 		api.ResourceMemory: *resource.NewQuantity(3000, resource.DecimalSI),
@@ -350,7 +355,7 @@ func TestCreateCloudNodes(t *testing.T) {
 
 	for _, item := range table {
 		nodeController := NewNodeController(item.fakeCloud, ".*", nil, &api.NodeResources{}, nil, nil, 10, time.Minute)
-		nodes, err := nodeController.CloudNodes()
+		nodes, err := nodeController.GetCloudNodesWithSpec()
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -366,7 +371,8 @@ func TestSyncCloud(t *testing.T) {
 		fakeCloud            *fake_cloud.FakeCloud
 		matchRE              string
 		expectedRequestCount int
-		expectedCreated      []string
+		expectedNameCreated  []string
+		expectedExtIDCreated []string
 		expectedDeleted      []string
 	}{
 		{
@@ -376,10 +382,15 @@ func TestSyncCloud(t *testing.T) {
 			},
 			fakeCloud: &fake_cloud.FakeCloud{
 				Machines: []string{"node0"},
+				ExtID: map[string]string{
+					"node0": "ext-node0",
+					"node1": "ext-node1",
+				},
 			},
 			matchRE:              ".*",
 			expectedRequestCount: 1, // List
-			expectedCreated:      []string{},
+			expectedNameCreated:  []string{},
+			expectedExtIDCreated: []string{},
 			expectedDeleted:      []string{},
 		},
 		{
@@ -389,10 +400,15 @@ func TestSyncCloud(t *testing.T) {
 			},
 			fakeCloud: &fake_cloud.FakeCloud{
 				Machines: []string{"node0", "node1"},
+				ExtID: map[string]string{
+					"node0": "ext-node0",
+					"node1": "ext-node1",
+				},
 			},
 			matchRE:              ".*",
 			expectedRequestCount: 2, // List + Create
-			expectedCreated:      []string{"node1"},
+			expectedNameCreated:  []string{"node1"},
+			expectedExtIDCreated: []string{"ext-node1"},
 			expectedDeleted:      []string{},
 		},
 		{
@@ -402,10 +418,15 @@ func TestSyncCloud(t *testing.T) {
 			},
 			fakeCloud: &fake_cloud.FakeCloud{
 				Machines: []string{"node0"},
+				ExtID: map[string]string{
+					"node0": "ext-node0",
+					"node1": "ext-node1",
+				},
 			},
 			matchRE:              ".*",
 			expectedRequestCount: 2, // List + Delete
-			expectedCreated:      []string{},
+			expectedNameCreated:  []string{},
+			expectedExtIDCreated: []string{},
 			expectedDeleted:      []string{"node1"},
 		},
 		{
@@ -415,10 +436,16 @@ func TestSyncCloud(t *testing.T) {
 			},
 			fakeCloud: &fake_cloud.FakeCloud{
 				Machines: []string{"node0", "node1", "fake"},
+				ExtID: map[string]string{
+					"node0": "ext-node0",
+					"node1": "ext-node1",
+					"fake":  "ext-fake",
+				},
 			},
 			matchRE:              "node[0-9]+",
 			expectedRequestCount: 2, // List + Create
-			expectedCreated:      []string{"node1"},
+			expectedNameCreated:  []string{"node1"},
+			expectedExtIDCreated: []string{"ext-node1"},
 			expectedDeleted:      []string{},
 		},
 	}
@@ -432,8 +459,12 @@ func TestSyncCloud(t *testing.T) {
 			t.Errorf("expected %v call, but got %v.", item.expectedRequestCount, item.fakeNodeHandler.RequestCount)
 		}
 		nodes := sortedNodeNames(item.fakeNodeHandler.CreatedNodes)
-		if !reflect.DeepEqual(item.expectedCreated, nodes) {
-			t.Errorf("expected node list %+v, got %+v", item.expectedCreated, nodes)
+		if !reflect.DeepEqual(item.expectedNameCreated, nodes) {
+			t.Errorf("expected node list %+v, got %+v", item.expectedNameCreated, nodes)
+		}
+		nodeExtIDs := sortedNodeExternalIDs(item.fakeNodeHandler.CreatedNodes)
+		if !reflect.DeepEqual(item.expectedExtIDCreated, nodeExtIDs) {
+			t.Errorf("expected node external id list %+v, got %+v", item.expectedExtIDCreated, nodeExtIDs)
 		}
 		nodes = sortedNodeNames(item.fakeNodeHandler.DeletedNodes)
 		if !reflect.DeepEqual(item.expectedDeleted, nodes) {
@@ -588,35 +619,37 @@ func TestHealthCheckNode(t *testing.T) {
 	}
 }
 
-func TestPopulateNodeIPs(t *testing.T) {
+func TestPopulateNodeAddresses(t *testing.T) {
 	table := []struct {
-		nodes        *api.NodeList
-		fakeCloud    *fake_cloud.FakeCloud
-		expectedFail bool
-		expectedIP   string
+		nodes             *api.NodeList
+		fakeCloud         *fake_cloud.FakeCloud
+		expectedFail      bool
+		expectedAddresses []api.NodeAddress
 	}{
 		{
-			nodes:      &api.NodeList{Items: []api.Node{*newNode("node0"), *newNode("node1")}},
-			fakeCloud:  &fake_cloud.FakeCloud{IP: net.ParseIP("1.2.3.4")},
-			expectedIP: "1.2.3.4",
+			nodes:     &api.NodeList{Items: []api.Node{*newNode("node0"), *newNode("node1")}},
+			fakeCloud: &fake_cloud.FakeCloud{IP: net.ParseIP("1.2.3.4")},
+			expectedAddresses: []api.NodeAddress{
+				{Type: api.NodeLegacyHostIP, Address: "1.2.3.4"},
+			},
 		},
 		{
-			nodes:      &api.NodeList{Items: []api.Node{*newNode("node0"), *newNode("node1")}},
-			fakeCloud:  &fake_cloud.FakeCloud{Err: ErrQueryIPAddress},
-			expectedIP: "",
+			nodes:             &api.NodeList{Items: []api.Node{*newNode("node0"), *newNode("node1")}},
+			fakeCloud:         &fake_cloud.FakeCloud{Err: ErrQueryIPAddress},
+			expectedAddresses: nil,
 		},
 	}
 
 	for _, item := range table {
 		nodeController := NewNodeController(item.fakeCloud, ".*", nil, nil, nil, nil, 10, time.Minute)
-		result, err := nodeController.PopulateIPs(item.nodes)
+		result, err := nodeController.PopulateAddresses(item.nodes)
 		// In case of IP querying error, we should continue.
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 		for _, node := range result.Items {
-			if node.Status.HostIP != item.expectedIP {
-				t.Errorf("expect HostIP %s, got %s", item.expectedIP, node.Status.HostIP)
+			if !reflect.DeepEqual(item.expectedAddresses, node.Status.Addresses) {
+				t.Errorf("expect HostIP %s, got %s", item.expectedAddresses, node.Status.Addresses)
 			}
 		}
 	}
@@ -685,6 +718,9 @@ func TestSyncNodeStatusTransitionTime(t *testing.T) {
 
 	for _, item := range table {
 		nodeController := NewNodeController(nil, "", []string{"node0"}, nil, item.fakeNodeHandler, item.fakeKubeletClient, 10, time.Minute)
+		nodeController.lookupIP = func(host string) ([]net.IP, error) {
+			return nil, fmt.Errorf("lookup %v: no such host", host)
+		}
 		if err := nodeController.SyncNodeStatus(); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -705,6 +741,118 @@ func TestSyncNodeStatusTransitionTime(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+func TestEvictTimeoutedPods(t *testing.T) {
+	table := []struct {
+		fakeNodeHandler      *FakeNodeHandler
+		expectedRequestCount int
+		expectedActions      []client.FakeAction
+	}{
+		// Node created long time ago, with no status.
+		{
+			fakeNodeHandler: &FakeNodeHandler{
+				Existing: []*api.Node{
+					{
+						ObjectMeta: api.ObjectMeta{
+							Name:              "node0",
+							CreationTimestamp: util.Date(2012, 1, 1, 0, 0, 0, 0, time.UTC),
+						},
+					},
+				},
+				Fake: client.Fake{
+					PodsList: api.PodList{Items: []api.Pod{*newPod("pod0", "node0")}},
+				},
+			},
+			expectedRequestCount: 1, // List
+			expectedActions:      []client.FakeAction{{Action: "list-pods"}, {Action: "delete-pod", Value: "pod0"}},
+		},
+		// Node created recently, with no status.
+		{
+			fakeNodeHandler: &FakeNodeHandler{
+				Existing: []*api.Node{
+					{
+						ObjectMeta: api.ObjectMeta{
+							Name:              "node0",
+							CreationTimestamp: util.Now(),
+						},
+					},
+				},
+				Fake: client.Fake{
+					PodsList: api.PodList{Items: []api.Pod{*newPod("pod0", "node0")}},
+				},
+			},
+			expectedRequestCount: 1, // List
+			expectedActions:      nil,
+		},
+		// Node created long time ago, with status updated long time ago.
+		{
+			fakeNodeHandler: &FakeNodeHandler{
+				Existing: []*api.Node{
+					{
+						ObjectMeta: api.ObjectMeta{
+							Name:              "node0",
+							CreationTimestamp: util.Date(2012, 1, 1, 0, 0, 0, 0, time.UTC),
+						},
+						Status: api.NodeStatus{
+							Conditions: []api.NodeCondition{
+								{
+									Type:          api.NodeReady,
+									Status:        api.ConditionFull,
+									LastProbeTime: util.Date(2013, 1, 1, 0, 0, 0, 0, time.UTC),
+								},
+							},
+						},
+					},
+				},
+				Fake: client.Fake{
+					PodsList: api.PodList{Items: []api.Pod{*newPod("pod0", "node0")}},
+				},
+			},
+			expectedRequestCount: 1, // List
+			expectedActions:      []client.FakeAction{{Action: "list-pods"}, {Action: "delete-pod", Value: "pod0"}},
+		},
+		// Node created long time ago, with status updated recently.
+		{
+			fakeNodeHandler: &FakeNodeHandler{
+				Existing: []*api.Node{
+					{
+						ObjectMeta: api.ObjectMeta{
+							Name:              "node0",
+							CreationTimestamp: util.Date(2012, 1, 1, 0, 0, 0, 0, time.UTC),
+						},
+						Status: api.NodeStatus{
+							Conditions: []api.NodeCondition{
+								{
+									Type:          api.NodeReady,
+									Status:        api.ConditionFull,
+									LastProbeTime: util.Now(),
+								},
+							},
+						},
+					},
+				},
+				Fake: client.Fake{
+					PodsList: api.PodList{Items: []api.Pod{*newPod("pod0", "node0")}},
+				},
+			},
+			expectedRequestCount: 1, // List
+			expectedActions:      nil,
+		},
+	}
+
+	for _, item := range table {
+		nodeController := NewNodeController(nil, "", []string{"node0"}, nil, item.fakeNodeHandler, nil, 10, 5*time.Minute)
+		if err := nodeController.EvictTimeoutedPods(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if item.expectedRequestCount != item.fakeNodeHandler.RequestCount {
+			t.Errorf("expected %v call, but got %v.", item.expectedRequestCount, item.fakeNodeHandler.RequestCount)
+		}
+		if !reflect.DeepEqual(item.expectedActions, item.fakeNodeHandler.Actions) {
+			t.Errorf("actions differs, expected %+v, got %+v", item.expectedActions, item.fakeNodeHandler.Actions)
 		}
 	}
 }
@@ -844,6 +992,9 @@ func TestSyncNodeStatusDeletePods(t *testing.T) {
 
 	for _, item := range table {
 		nodeController := NewNodeController(nil, "", []string{"node0"}, nil, item.fakeNodeHandler, item.fakeKubeletClient, 10, 5*time.Minute)
+		nodeController.lookupIP = func(host string) ([]net.IP, error) {
+			return nil, fmt.Errorf("lookup %v: no such host", host)
+		}
 		if err := nodeController.SyncNodeStatus(); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -886,7 +1037,9 @@ func TestSyncNodeStatus(t *testing.T) {
 								Reason: "Node health check succeeded: kubelet /healthz endpoint returns ok",
 							},
 						},
-						HostIP: "1.2.3.4",
+						Addresses: []api.NodeAddress{
+							{Type: api.NodeLegacyHostIP, Address: "1.2.3.4"},
+						},
 					},
 				},
 				{
@@ -899,7 +1052,9 @@ func TestSyncNodeStatus(t *testing.T) {
 								Reason: "Node health check succeeded: kubelet /healthz endpoint returns ok",
 							},
 						},
-						HostIP: "1.2.3.4",
+						Addresses: []api.NodeAddress{
+							{Type: api.NodeLegacyHostIP, Address: "1.2.3.4"},
+						},
 					},
 				},
 			},
@@ -957,6 +1112,15 @@ func sortedNodeNames(nodes []*api.Node) []string {
 	}
 	sort.Strings(nodeNames)
 	return nodeNames
+}
+
+func sortedNodeExternalIDs(nodes []*api.Node) []string {
+	nodeExternalIDs := []string{}
+	for _, node := range nodes {
+		nodeExternalIDs = append(nodeExternalIDs, node.Spec.ExternalID)
+	}
+	sort.Strings(nodeExternalIDs)
+	return nodeExternalIDs
 }
 
 func contains(node *api.Node, nodes []*api.Node) bool {

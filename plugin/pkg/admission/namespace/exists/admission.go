@@ -82,7 +82,6 @@ func (e *exists) Admit(a admission.Attributes) (err error) {
 
 func NewExists(c client.Interface) admission.Interface {
 	store := cache.NewStore(cache.MetaNamespaceKeyFunc)
-	// TODO: look into a list/watch that can work with client.Interface, maybe pass it a ListFunc and a WatchFunc
 	reflector := cache.NewReflector(
 		&cache.ListWatch{
 			ListFunc: func() (runtime.Object, error) {
@@ -94,6 +93,7 @@ func NewExists(c client.Interface) admission.Interface {
 		},
 		&api.Namespace{},
 		store,
+		0,
 	)
 	reflector.Run()
 	return &exists{

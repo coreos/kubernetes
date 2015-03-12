@@ -19,6 +19,8 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
 	"testing"
@@ -29,6 +31,7 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/conversion"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
 	"github.com/coreos/go-etcd/etcd"
+	"github.com/stretchr/testify/assert"
 )
 
 type TestResource struct {
@@ -354,7 +357,8 @@ func TestCreateObj(t *testing.T) {
 	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
 	fakeClient := NewFakeEtcdClient(t)
 	helper := EtcdHelper{fakeClient, testapi.Codec(), versioner}
-	err := helper.CreateObj("/some/key", obj, 5)
+	returnedObj := &api.Pod{}
+	err := helper.CreateObj("/some/key", obj, returnedObj, 5)
 	if err != nil {
 		t.Errorf("Unexpected error %#v", err)
 	}
@@ -369,13 +373,27 @@ func TestCreateObj(t *testing.T) {
 	if e, a := uint64(5), fakeClient.LastSetTTL; e != a {
 		t.Errorf("Wanted %v, got %v", e, a)
 	}
+	if obj.ResourceVersion != returnedObj.ResourceVersion || obj.Name != returnedObj.Name {
+		t.Errorf("If set was successful but returned object did not have correct resource version")
+	}
+}
+
+func TestCreateObjNilOutParam(t *testing.T) {
+	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
+	fakeClient := NewFakeEtcdClient(t)
+	helper := EtcdHelper{fakeClient, testapi.Codec(), versioner}
+	err := helper.CreateObj("/some/key", obj, nil, 5)
+	if err != nil {
+		t.Errorf("Unexpected error %#v", err)
+	}
 }
 
 func TestSetObj(t *testing.T) {
 	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
 	fakeClient := NewFakeEtcdClient(t)
 	helper := EtcdHelper{fakeClient, testapi.Codec(), versioner}
-	err := helper.SetObj("/some/key", obj, 5)
+	returnedObj := &api.Pod{}
+	err := helper.SetObj("/some/key", obj, returnedObj, 5)
 	if err != nil {
 		t.Errorf("Unexpected error %#v", err)
 	}
@@ -391,7 +409,20 @@ func TestSetObj(t *testing.T) {
 	if e, a := uint64(5), fakeClient.LastSetTTL; e != a {
 		t.Errorf("Wanted %v, got %v", e, a)
 	}
+	if obj.ResourceVersion != returnedObj.ResourceVersion || obj.Name != returnedObj.Name {
+		t.Errorf("If set was successful but returned object did not have correct resource version")
+	}
+}
 
+func TestSetObjFailCAS(t *testing.T) {
+	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo", ResourceVersion: "1"}}
+	fakeClient := NewFakeEtcdClient(t)
+	fakeClient.CasErr = fakeClient.NewError(123)
+	helper := EtcdHelper{fakeClient, testapi.Codec(), versioner}
+	err := helper.SetObj("/some/key", obj, nil, 5)
+	if err == nil {
+		t.Errorf("Expecting error.")
+	}
 }
 
 func TestSetObjWithVersion(t *testing.T) {
@@ -408,7 +439,8 @@ func TestSetObjWithVersion(t *testing.T) {
 	}
 
 	helper := EtcdHelper{fakeClient, testapi.Codec(), versioner}
-	err := helper.SetObj("/some/key", obj, 7)
+	returnedObj := &api.Pod{}
+	err := helper.SetObj("/some/key", obj, returnedObj, 7)
 	if err != nil {
 		t.Fatalf("Unexpected error %#v", err)
 	}
@@ -424,13 +456,17 @@ func TestSetObjWithVersion(t *testing.T) {
 	if e, a := uint64(7), fakeClient.LastSetTTL; e != a {
 		t.Errorf("Wanted %v, got %v", e, a)
 	}
+	if obj.ResourceVersion != returnedObj.ResourceVersion || obj.Name != returnedObj.Name {
+		t.Errorf("If set was successful but returned object did not have correct resource version")
+	}
 }
 
 func TestSetObjWithoutResourceVersioner(t *testing.T) {
 	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
 	fakeClient := NewFakeEtcdClient(t)
 	helper := EtcdHelper{fakeClient, testapi.Codec(), nil}
-	err := helper.SetObj("/some/key", obj, 3)
+	returnedObj := &api.Pod{}
+	err := helper.SetObj("/some/key", obj, returnedObj, 3)
 	if err != nil {
 		t.Errorf("Unexpected error %#v", err)
 	}
@@ -445,6 +481,19 @@ func TestSetObjWithoutResourceVersioner(t *testing.T) {
 	}
 	if e, a := uint64(3), fakeClient.LastSetTTL; e != a {
 		t.Errorf("Wanted %v, got %v", e, a)
+	}
+	if obj.ResourceVersion != returnedObj.ResourceVersion || obj.Name != returnedObj.Name {
+		t.Errorf("If set was successful but returned object did not have correct resource version")
+	}
+}
+
+func TestSetObjNilOutParam(t *testing.T) {
+	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
+	fakeClient := NewFakeEtcdClient(t)
+	helper := EtcdHelper{fakeClient, testapi.Codec(), nil}
+	err := helper.SetObj("/some/key", obj, nil, 3)
+	if err != nil {
+		t.Errorf("Unexpected error %#v", err)
 	}
 }
 
@@ -607,4 +656,49 @@ func TestAtomicUpdate_CreateCollision(t *testing.T) {
 	if stored.Value != concurrency {
 		t.Errorf("Some of the writes were lost. Stored value: %d", stored.Value)
 	}
+}
+
+func TestGetEtcdVersion_ValidVersion(t *testing.T) {
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "{\"releaseVersion\":\"2.0.3\",\"internalVersion\":\"2\"}")
+	}))
+	defer testServer.Close()
+
+	var relVersion string
+	var intVersion string
+	var err error
+	if relVersion, intVersion, err = GetEtcdVersion(testServer.URL); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	assert.Equal(t, "2.0.3", relVersion, "Unexpected external version")
+	assert.Equal(t, "2", intVersion, "Unexpected internal version")
+	assert.Nil(t, err)
+}
+
+func TestGetEtcdVersion_UnknownVersion(t *testing.T) {
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "{\"unknownAttribute\":\"foobar\",\"internalVersion\":\"2\"}")
+	}))
+	defer testServer.Close()
+
+	var relVersion string
+	var intVersion string
+	var err error
+	if relVersion, intVersion, err = GetEtcdVersion(testServer.URL); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	assert.Equal(t, "", relVersion, "Unexpected external version")
+	assert.Equal(t, "2", intVersion, "Unexpected internal version")
+	assert.Nil(t, err)
+}
+
+func TestGetEtcdVersion_ErrorStatus(t *testing.T) {
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer testServer.Close()
+
+	var err error
+	_, _, err = GetEtcdVersion(testServer.URL)
+	assert.NotNil(t, err)
 }

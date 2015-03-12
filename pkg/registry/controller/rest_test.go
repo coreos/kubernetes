@@ -28,6 +28,7 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/latest"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/rest/resttest"
 	_ "github.com/GoogleCloudPlatform/kubernetes/pkg/api/v1beta1"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/registry/registrytest"
 )
@@ -40,7 +41,7 @@ func TestListControllersError(t *testing.T) {
 		registry: &mockRegistry,
 	}
 	ctx := api.NewContext()
-	controllers, err := storage.List(ctx, labels.Everything(), labels.Everything())
+	controllers, err := storage.List(ctx, labels.Everything(), fields.Everything())
 	if err != mockRegistry.Err {
 		t.Errorf("Expected %#v, Got %#v", mockRegistry.Err, err)
 	}
@@ -57,7 +58,7 @@ func TestListEmptyControllerList(t *testing.T) {
 		registry: &mockRegistry,
 	}
 	ctx := api.NewContext()
-	controllers, err := storage.List(ctx, labels.Everything(), labels.Everything())
+	controllers, err := storage.List(ctx, labels.Everything(), fields.Everything())
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestListControllerList(t *testing.T) {
 		registry: &mockRegistry,
 	}
 	ctx := api.NewContext()
-	controllersObj, err := storage.List(ctx, labels.Everything(), labels.Everything())
+	controllersObj, err := storage.List(ctx, labels.Everything(), fields.Everything())
 	controllers := controllersObj.(*api.ReplicationControllerList)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -171,7 +172,7 @@ func TestControllerParsing(t *testing.T) {
 					Containers: []api.Container{
 						{
 							Image: "dockerfile/nginx",
-							Ports: []api.Port{
+							Ports: []api.ContainerPort{
 								{
 									ContainerPort: 80,
 									HostPort:      8080,
@@ -350,37 +351,6 @@ type fakePodLister struct {
 func (f *fakePodLister) ListPods(ctx api.Context, s labels.Selector) (*api.PodList, error) {
 	f.s = s
 	return &f.l, f.e
-}
-
-func TestFillCurrentState(t *testing.T) {
-	fakeLister := fakePodLister{
-		l: api.PodList{
-			Items: []api.Pod{
-				{ObjectMeta: api.ObjectMeta{Name: "foo"}},
-				{ObjectMeta: api.ObjectMeta{Name: "bar"}},
-			},
-		},
-	}
-	mockRegistry := registrytest.ControllerRegistry{}
-	storage := REST{
-		registry:  &mockRegistry,
-		podLister: &fakeLister,
-	}
-	controller := api.ReplicationController{
-		Spec: api.ReplicationControllerSpec{
-			Selector: map[string]string{
-				"foo": "bar",
-			},
-		},
-	}
-	ctx := api.NewContext()
-	storage.fillCurrentState(ctx, &controller)
-	if controller.Status.Replicas != 2 {
-		t.Errorf("expected 2, got: %d", controller.Status.Replicas)
-	}
-	if !api.Semantic.DeepEqual(fakeLister.s, labels.Set(controller.Spec.Selector).AsSelector()) {
-		t.Errorf("unexpected output: %#v %#v", labels.Set(controller.Spec.Selector).AsSelector(), fakeLister.s)
-	}
 }
 
 // TODO: remove, covered by TestCreate

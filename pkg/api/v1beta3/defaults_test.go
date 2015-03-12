@@ -22,6 +22,7 @@ import (
 
 	current "github.com/GoogleCloudPlatform/kubernetes/pkg/api/v1beta3"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 )
 
 func roundTrip(t *testing.T, obj runtime.Object) runtime.Object {
@@ -64,7 +65,7 @@ func TestSetDefaulPodSpec(t *testing.T) {
 	if policy.Never != nil || policy.OnFailure != nil || policy.Always == nil {
 		t.Errorf("Expected only policy.Always is set, got: %s", policy)
 	}
-	vsource := bp2.Spec.Volumes[0].Source
+	vsource := bp2.Spec.Volumes[0].VolumeSource
 	if vsource.EmptyDir == nil {
 		t.Errorf("Expected non-empty volume is set, got: %s", vsource.EmptyDir)
 	}
@@ -73,7 +74,7 @@ func TestSetDefaulPodSpec(t *testing.T) {
 func TestSetDefaultContainer(t *testing.T) {
 	bp := &current.BoundPod{}
 	bp.Spec.Containers = []current.Container{{}}
-	bp.Spec.Containers[0].Ports = []current.Port{{}}
+	bp.Spec.Containers[0].Ports = []current.ContainerPort{{}}
 
 	obj2 := roundTrip(t, runtime.Object(bp))
 	bp2 := obj2.(*current.BoundPod)
@@ -110,5 +111,31 @@ func TestSetDefaulEndpointsProtocol(t *testing.T) {
 
 	if out.Protocol != current.ProtocolTCP {
 		t.Errorf("Expected protocol %s, got %s", current.ProtocolTCP, out.Protocol)
+	}
+}
+
+func TestSetDefaulServiceDestinationPort(t *testing.T) {
+	in := &current.Service{Spec: current.ServiceSpec{Port: 1234}}
+	obj := roundTrip(t, runtime.Object(in))
+	out := obj.(*current.Service)
+	if out.Spec.ContainerPort.Kind != util.IntstrInt || out.Spec.ContainerPort.IntVal != 1234 {
+		t.Errorf("Expected ContainerPort to be defaulted, got %s", out.Spec.ContainerPort)
+	}
+
+	in = &current.Service{Spec: current.ServiceSpec{Port: 1234, ContainerPort: util.NewIntOrStringFromInt(5678)}}
+	obj = roundTrip(t, runtime.Object(in))
+	out = obj.(*current.Service)
+	if out.Spec.ContainerPort.Kind != util.IntstrInt || out.Spec.ContainerPort.IntVal != 5678 {
+		t.Errorf("Expected ContainerPort to be unchanged, got %s", out.Spec.ContainerPort)
+	}
+}
+
+func TestSetDefaultNamespace(t *testing.T) {
+	s := &current.Namespace{}
+	obj2 := roundTrip(t, runtime.Object(s))
+	s2 := obj2.(*current.Namespace)
+
+	if s2.Status.Phase != current.NamespaceActive {
+		t.Errorf("Expected phase %v, got %v", current.NamespaceActive, s2.Status.Phase)
 	}
 }

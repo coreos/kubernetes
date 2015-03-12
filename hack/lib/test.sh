@@ -23,7 +23,7 @@ readonly   red=$(tput setaf 1)
 readonly green=$(tput setaf 2)
 
 kube::test::clear_all() {
-  kubectl delete rc,pods --all
+  kubectl delete "${kube_flags[@]}" rc,pods --all
 }
 
 kube::test::get_object_assert() {
@@ -31,7 +31,7 @@ kube::test::get_object_assert() {
   local request=$2
   local expected=$3
 
-  res=$(kubectl get $object -o template -t "$request")
+  res=$(eval kubectl get "${kube_flags[@]}" $object -o template -t "$request")
 
   if [[ "$res" =~ ^$expected$ ]]; then
       echo -n ${green}
@@ -49,4 +49,33 @@ kube::test::get_object_assert() {
       echo ${reset}
       return 1
   fi
+}
+
+kube::test::describe_object_assert() {
+  local resource=$1
+  local object=$2
+  local matches=${@:3}
+
+  result=$(eval kubectl describe "${kube_flags[@]}" $resource $object)
+
+  for match in ${matches}; do
+    if [[ ! $(echo "$result" | grep ${match}) ]]; then
+      echo ${bold}${red}
+      echo "FAIL!"
+      echo "Describe $resource $object"
+      echo "  Expected Match: $match"
+      echo "  Not found in:"
+      echo "$result"
+      echo ${reset}${red}
+      caller
+      echo ${reset}
+      return 1
+    fi
+  done
+
+  echo -n ${green}
+  echo "Successful describe $resource $object:"
+  echo "$result"
+  echo -n ${reset}
+  return 0
 }

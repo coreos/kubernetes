@@ -155,10 +155,10 @@ type Volume struct {
 	// Required: This must be a DNS_LABEL.  Each volume in a pod must have
 	// a unique name.
 	Name string `json:"name"`
-	// Source represents the location and type of a volume to mount.
+	// The VolumeSource represents the location and type of a volume to mount.
 	// This is optional for now. If not specified, the Volume is implied to be an EmptyDir.
 	// This implied behavior is deprecated and will be removed in a future version.
-	Source VolumeSource `json:"source,omitempty"`
+	VolumeSource `json:",inline,omitempty"`
 }
 
 // VolumeSource represents the source location of a volume to mount.
@@ -239,8 +239,8 @@ type SecretVolumeSource struct {
 	Target ObjectReference `json:"target"`
 }
 
-// Port represents a network port in a single container
-type Port struct {
+// ContainerPort represents a network port in a single container
+type ContainerPort struct {
 	// Optional: If specified, this must be a DNS_LABEL.  Each named port
 	// in a pod must have a unique name.
 	Name string `json:"name,omitempty"`
@@ -346,9 +346,9 @@ type Container struct {
 	// Optional: Defaults to whatever is defined in the image.
 	Command []string `json:"command,omitempty"`
 	// Optional: Defaults to Docker's default.
-	WorkingDir string   `json:"workingDir,omitempty"`
-	Ports      []Port   `json:"ports,omitempty"`
-	Env        []EnvVar `json:"env,omitempty"`
+	WorkingDir string          `json:"workingDir,omitempty"`
+	Ports      []ContainerPort `json:"ports,omitempty"`
+	Env        []EnvVar        `json:"env,omitempty"`
 	// Compute resource requirements.
 	Resources      ResourceRequirements `json:"resources,omitempty"`
 	VolumeMounts   []VolumeMount        `json:"volumeMounts,omitempty"`
@@ -718,12 +718,15 @@ type ServiceSpec struct {
 
 	// CreateExternalLoadBalancer indicates whether a load balancer should be created for this service.
 	CreateExternalLoadBalancer bool `json:"createExternalLoadBalancer,omitempty"`
-	// PublicIPs are used by external load balancers.
+	// PublicIPs are used by external load balancers, or can be set by
+	// users to handle external traffic that arrives at a node.
 	PublicIPs []string `json:"publicIPs,omitempty"`
 
 	// ContainerPort is the name or number of the port on the container to direct traffic to.
 	// This is useful if the containers the service points to have multiple open ports.
 	// Optional: If unspecified, the first port on the container will be used.
+	// As of v1beta3 this field will become required in the internal API,
+	// and the versioned APIs must provide a default value.
 	ContainerPort util.IntOrString `json:"containerPort,omitempty"`
 
 	// Required: Supports "ClientIP" and "None".  Used to maintain session affinity.
@@ -764,6 +767,9 @@ type Endpoint struct {
 
 	// Required: The destination port to access.
 	Port int `json:"port"`
+
+	// Optional: The kubernetes object related to the entry point.
+	TargetRef *ObjectReference `json:"targetRef,omitempty"`
 }
 
 // EndpointsList is a list of endpoints.
@@ -780,17 +786,38 @@ type NodeSpec struct {
 	Capacity ResourceList `json:"capacity,omitempty"`
 	// PodCIDR represents the pod IP range assigned to the node
 	// Note: assigning IP ranges to nodes might need to be revisited when we support migratable IPs.
-	PodCIDR string `json:"cidr,omitempty"`
+	PodCIDR string `json:"podCIDR,omitempty"`
+	// External ID of the node assigned by some machine database (e.g. a cloud provider)
+	ExternalID string `json:"externalID,omitempty"`
+}
+
+// NodeSystemInfo is a set of ids/uuids to uniquely identify the node.
+type NodeSystemInfo struct {
+	// MachineID is the machine-id reported by the node
+	MachineID string `json:"machineID"`
+	// SystemUUID is the system-uuid reported by the node
+	SystemUUID string `json:"systemUUID"`
 }
 
 // NodeStatus is information about the current status of a node.
 type NodeStatus struct {
-	// Queried from cloud provider, if available.
-	HostIP string `json:"hostIP,omitempty"`
 	// NodePhase is the current lifecycle phase of the node.
 	Phase NodePhase `json:"phase,omitempty"`
 	// Conditions is an array of current node conditions.
 	Conditions []NodeCondition `json:"conditions,omitempty"`
+	// Queried from cloud provider, if available.
+	Addresses []NodeAddress `json:"addresses,omitempty"`
+	// NodeSystemInfo is a set of ids/uuids to uniquely identify the node
+	NodeInfo NodeSystemInfo `json:"nodeInfo,omitempty"`
+}
+
+// NodeInfo is the information collected on the node.
+type NodeInfo struct {
+	TypeMeta `json:",inline"`
+	// Capacity represents the available resources of a node
+	Capacity ResourceList `json:"capacity,omitempty"`
+	// NodeSystemInfo is a set of ids/uuids to uniquely identify the node
+	NodeSystemInfo `json:",inline,omitempty"`
 }
 
 type NodePhase string
@@ -824,6 +851,22 @@ type NodeCondition struct {
 	LastTransitionTime util.Time         `json:"lastTransitionTime,omitempty"`
 	Reason             string            `json:"reason,omitempty"`
 	Message            string            `json:"message,omitempty"`
+}
+
+type NodeAddressType string
+
+// These are valid address types of node. NodeLegacyHostIP is used to transit
+// from out-dated HostIP field to NodeAddress.
+const (
+	NodeLegacyHostIP NodeAddressType = "LegacyHostIP"
+	NodeHostName     NodeAddressType = "Hostname"
+	NodeExternalIP   NodeAddressType = "ExternalIP"
+	NodeInternalIP   NodeAddressType = "InternalIP"
+)
+
+type NodeAddress struct {
+	Type    NodeAddressType `json:"type"`
+	Address string          `json:"address"`
 }
 
 // NodeResources is an object for conveying resource information about a node.
@@ -874,7 +917,19 @@ type NamespaceSpec struct {
 
 // NamespaceStatus is information about the current status of a Namespace.
 type NamespaceStatus struct {
+	// Phase is the current lifecycle phase of the namespace.
+	Phase NamespacePhase `json:"phase,omitempty"`
 }
+
+type NamespacePhase string
+
+// These are the valid phases of a namespace.
+const (
+	// NamespaceActive means the namespace is available for use in the system
+	NamespaceActive NamespacePhase = "Active"
+	// NamespaceTerminating means the namespace is undergoing graceful termination
+	NamespaceTerminating NamespacePhase = "Terminating"
+)
 
 // A namespace provides a scope for Names.
 // Use of multiple namespaces is optional
@@ -897,13 +952,14 @@ type NamespaceList struct {
 	Items []Namespace `json:"items"`
 }
 
-// Binding is written by a scheduler to cause a pod to be bound to a host.
+// Binding ties one object to another - for example, a pod is bound to a node by a scheduler.
 type Binding struct {
-	TypeMeta   `json:",inline"`
+	TypeMeta `json:",inline"`
+	// ObjectMeta describes the object that is being bound.
 	ObjectMeta `json:"metadata,omitempty"`
 
-	PodID string `json:"podID"`
-	Host  string `json:"host"`
+	// Target is the object to bind to.
+	Target ObjectReference `json:"target"`
 }
 
 // Status is a return value for calls that don't return other objects.
@@ -1384,3 +1440,19 @@ const (
 
 	PortHeader = "port"
 )
+
+// Appends the NodeAddresses to the passed-by-pointer slice, only if they do not already exist
+func AddToNodeAddresses(addresses *[]NodeAddress, addAddresses ...NodeAddress) {
+	for _, add := range addAddresses {
+		exists := false
+		for _, existing := range *addresses {
+			if existing.Address == add.Address && existing.Type == add.Type {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			*addresses = append(*addresses, add)
+		}
+	}
+}

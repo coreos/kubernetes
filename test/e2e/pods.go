@@ -26,6 +26,7 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/client"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/watch"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -47,8 +48,7 @@ func runLivenessTest(c *client.Client, podDescr *api.Pod) {
 	// Wait until the pod is not pending. (Here we need to check for something other than
 	// 'Pending' other than checking for 'Running', since when failures occur, we go to
 	// 'Terminated' which can cause indefinite blocking.)
-	By("waiting for the pod to be something other than pending")
-	expectNoError(waitForPodNotPending(c, ns, podDescr.Name, 60*time.Second),
+	expectNoError(waitForPodNotPending(c, ns, podDescr.Name),
 		fmt.Sprintf("starting pod %s in namespace %s", podDescr.Name, ns))
 	By(fmt.Sprintf("Started pod %s in namespace %s", podDescr.Name, ns))
 
@@ -108,7 +108,7 @@ var _ = Describe("Pods", func() {
 					{
 						Name:  "nginx",
 						Image: "dockerfile/nginx",
-						Ports: []api.Port{{ContainerPort: 80}},
+						Ports: []api.ContainerPort{{ContainerPort: 80}},
 						LivenessProbe: &api.Probe{
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
@@ -123,27 +123,70 @@ var _ = Describe("Pods", func() {
 			},
 		}
 
+		By("setting up watch")
+		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
+		if err != nil {
+			Fail(fmt.Sprintf("Failed to query for pods: %v", err))
+		}
+		Expect(len(pods.Items)).To(Equal(0))
+		w, err := podClient.Watch(
+			labels.SelectorFromSet(labels.Set(map[string]string{"time": value})), labels.Everything(), pods.ListMeta.ResourceVersion)
+		if err != nil {
+			Fail(fmt.Sprintf("Failed to set up watch: %v", err))
+		}
+
 		By("submitting the pod to kubernetes")
 		// We call defer here in case there is a problem with
 		// the test so we can ensure that we clean up after
 		// ourselves
 		defer podClient.Delete(pod.Name)
-		_, err := podClient.Create(pod)
+		_, err = podClient.Create(pod)
 		if err != nil {
 			Fail(fmt.Sprintf("Failed to create pod: %v", err))
 		}
 
 		By("verifying the pod is in kubernetes")
-		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
+		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
 		if err != nil {
 			Fail(fmt.Sprintf("Failed to query for pods: %v", err))
 		}
 		Expect(len(pods.Items)).To(Equal(1))
 
+		By("veryfying pod creation was observed")
+		select {
+		case event, _ := <-w.ResultChan():
+			if event.Type != watch.Added {
+				Fail(fmt.Sprintf("Failed to observe pod creation: %v", event))
+			}
+		case <-time.After(podStartTimeout):
+			Fail("Timeout while waiting for pod creation")
+		}
+
 		By("deleting the pod")
 		podClient.Delete(pod.Name)
 		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
+		if err != nil {
+			Fail(fmt.Sprintf("Failed to delete pod: %v", err))
+		}
 		Expect(len(pods.Items)).To(Equal(0))
+
+		By("veryfying pod deletion was observed")
+		deleted := false
+		timeout := false
+		timer := time.After(podStartTimeout)
+		for !deleted && !timeout {
+			select {
+			case event, _ := <-w.ResultChan():
+				if event.Type == watch.Deleted {
+					deleted = true
+				}
+			case <-timer:
+				timeout = true
+			}
+		}
+		if !deleted {
+			Fail("Failed to observe pod deletion")
+		}
 	})
 
 	It("should be updated", func() {
@@ -165,7 +208,7 @@ var _ = Describe("Pods", func() {
 					{
 						Name:  "nginx",
 						Image: "dockerfile/nginx",
-						Ports: []api.Port{{ContainerPort: 80}},
+						Ports: []api.ContainerPort{{ContainerPort: 80}},
 						LivenessProbe: &api.Probe{
 							Handler: api.Handler{
 								HTTPGet: &api.HTTPGetAction{
@@ -190,8 +233,7 @@ var _ = Describe("Pods", func() {
 			Fail(fmt.Sprintf("Failed to create pod: %v", err))
 		}
 
-		By("waiting for the pod to start running")
-		expectNoError(waitForPodRunning(c, pod.Name, 300*time.Second))
+		expectNoError(waitForPodRunning(c, pod.Name))
 
 		By("verifying the pod is in kubernetes")
 		pods, err := podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
@@ -213,8 +255,7 @@ var _ = Describe("Pods", func() {
 			Fail(fmt.Sprintf("Failed to update pod: %v", err))
 		}
 
-		By("waiting for the updated pod to start running")
-		expectNoError(waitForPodRunning(c, pod.Name, 300*time.Second))
+		expectNoError(waitForPodRunning(c, pod.Name))
 
 		By("verifying the updated pod is in kubernetes")
 		pods, err = podClient.List(labels.SelectorFromSet(labels.Set(map[string]string{"time": value})))
@@ -236,7 +277,7 @@ var _ = Describe("Pods", func() {
 					{
 						Name:  "srv",
 						Image: "kubernetes/serve_hostname",
-						Ports: []api.Port{{ContainerPort: 9376}},
+						Ports: []api.ContainerPort{{ContainerPort: 9376}},
 					},
 				},
 			},
@@ -246,7 +287,7 @@ var _ = Describe("Pods", func() {
 		if err != nil {
 			Fail(fmt.Sprintf("Failed to create serverPod: %v", err))
 		}
-		expectNoError(waitForPodRunning(c, serverPod.Name, 300*time.Second))
+		expectNoError(waitForPodRunning(c, serverPod.Name))
 
 		// This service exposes port 8080 of the test pod as a service on port 8765
 		// TODO(filbranden): We would like to use a unique service name such as:
@@ -305,8 +346,7 @@ var _ = Describe("Pods", func() {
 			Fail(fmt.Sprintf("Failed to create pod: %v", err))
 		}
 
-		// Wait for client pod to complete.
-		expectNoError(waitForPodRunning(c, clientPod.Name, 60*time.Second))
+		expectNoError(waitForPodRunning(c, clientPod.Name))
 
 		// Grab its logs.  Get host first.
 		clientPodStatus, err := c.Pods(api.NamespaceDefault).Get(clientPod.Name)

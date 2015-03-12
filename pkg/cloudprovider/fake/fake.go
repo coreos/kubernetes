@@ -24,17 +24,28 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/cloudprovider"
 )
 
+// FakeBalancer is a fake storage of balancer information
+type FakeBalancer struct {
+	Name       string
+	Region     string
+	ExternalIP net.IP
+	Port       int
+	Hosts      []string
+}
+
 // FakeCloud is a test-double implementation of Interface, TCPLoadBalancer and Instances. It is useful for testing.
 type FakeCloud struct {
 	Exists        bool
 	Err           error
 	Calls         []string
 	IP            net.IP
+	ExtID         map[string]string
 	Machines      []string
 	NodeResources *api.NodeResources
 	ClusterList   []string
 	MasterName    string
 	ExternalIP    net.IP
+	Balancers     []FakeBalancer
 
 	cloudprovider.Zone
 }
@@ -86,6 +97,7 @@ func (f *FakeCloud) TCPLoadBalancerExists(name, region string) (bool, error) {
 // It adds an entry "create" into the internal method call record.
 func (f *FakeCloud) CreateTCPLoadBalancer(name, region string, externalIP net.IP, port int, hosts []string, affinityType api.AffinityType) (net.IP, error) {
 	f.addCall("create")
+	f.Balancers = append(f.Balancers, FakeBalancer{name, region, externalIP, port, hosts})
 	return f.ExternalIP, f.Err
 }
 
@@ -108,6 +120,14 @@ func (f *FakeCloud) DeleteTCPLoadBalancer(name, region string) error {
 func (f *FakeCloud) IPAddress(instance string) (net.IP, error) {
 	f.addCall("ip-address")
 	return f.IP, f.Err
+}
+
+// ExternalID is a test-spy implementation of Instances.ExternalID.
+// It adds an entry "external-id" into the internal method call record.
+// It returns an external id to the mapped instance name, if not found, it will return "ext-{instance}"
+func (f *FakeCloud) ExternalID(instance string) (string, error) {
+	f.addCall("external-id")
+	return f.ExtID[instance], f.Err
 }
 
 // List is a test-spy implementation of Instances.List.

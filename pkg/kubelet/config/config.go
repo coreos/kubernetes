@@ -18,7 +18,9 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
@@ -55,17 +57,22 @@ type PodConfig struct {
 
 	// the channel of denormalized changes passed to listeners
 	updates chan kubelet.PodUpdate
+
+	// contains the list of all configured sources
+	sourcesLock sync.Mutex
+	sources     util.StringSet
 }
 
 // NewPodConfig creates an object that can merge many configuration sources into a stream
 // of normalized updates to a pod configuration.
-func NewPodConfig(mode PodConfigNotificationMode) *PodConfig {
+func NewPodConfig(mode PodConfigNotificationMode, recorder record.EventRecorder) *PodConfig {
 	updates := make(chan kubelet.PodUpdate, 50)
-	storage := newPodStorage(updates, mode)
+	storage := newPodStorage(updates, mode, recorder)
 	podConfig := &PodConfig{
 		pods:    storage,
 		mux:     config.NewMux(storage),
 		updates: updates,
+		sources: util.StringSet{},
 	}
 	return podConfig
 }
@@ -73,17 +80,20 @@ func NewPodConfig(mode PodConfigNotificationMode) *PodConfig {
 // Channel creates or returns a config source channel.  The channel
 // only accepts PodUpdates
 func (c *PodConfig) Channel(source string) chan<- interface{} {
+	c.sourcesLock.Lock()
+	defer c.sourcesLock.Unlock()
+	c.sources.Insert(source)
 	return c.mux.Channel(source)
 }
 
-// IsSourceSeen returns true if the specified source string has previously
-// been marked as seen.
-func (c *PodConfig) IsSourceSeen(source string) bool {
+// SeenAllSources returns true if this config has received a SET
+// message from all configured sources, false otherwise.
+func (c *PodConfig) SeenAllSources() bool {
 	if c.pods == nil {
 		return false
 	}
-	glog.V(6).Infof("Looking for %v, have seen %v", source, c.pods.sourcesSeen)
-	return c.pods.seenSources(source)
+	glog.V(6).Infof("Looking for %v, have seen %v", c.sources.List(), c.pods.sourcesSeen)
+	return c.pods.seenSources(c.sources.List()...)
 }
 
 // Updates returns a channel of updates to the configuration, properly denormalized.
@@ -114,17 +124,21 @@ type podStorage struct {
 	// contains the set of all sources that have sent at least one SET
 	sourcesSeenLock sync.Mutex
 	sourcesSeen     util.StringSet
+
+	// the EventRecorder to use
+	recorder record.EventRecorder
 }
 
 // TODO: PodConfigNotificationMode could be handled by a listener to the updates channel
 // in the future, especially with multiple listeners.
 // TODO: allow initialization of the current state of the store with snapshotted version.
-func newPodStorage(updates chan<- kubelet.PodUpdate, mode PodConfigNotificationMode) *podStorage {
+func newPodStorage(updates chan<- kubelet.PodUpdate, mode PodConfigNotificationMode, recorder record.EventRecorder) *podStorage {
 	return &podStorage{
 		pods:        make(map[string]map[string]*api.BoundPod),
 		mode:        mode,
 		updates:     updates,
 		sourcesSeen: util.StringSet{},
+		recorder:    recorder,
 	}
 }
 
@@ -192,9 +206,9 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 			glog.V(4).Infof("Updating pods from source %s : %v", source, update.Pods)
 		}
 
-		filtered := filterInvalidPods(update.Pods, source)
+		filtered := filterInvalidPods(update.Pods, source, s.recorder)
 		for _, ref := range filtered {
-			name := podUniqueName(ref)
+			name := kubelet.GetPodFullName(ref)
 			if existing, found := pods[name]; found {
 				if !reflect.DeepEqual(existing.Spec, ref.Spec) {
 					// this is an update
@@ -217,7 +231,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 	case kubelet.REMOVE:
 		glog.V(4).Infof("Removing a pod %v", update)
 		for _, value := range update.Pods {
-			name := podUniqueName(&value)
+			name := kubelet.GetPodFullName(&value)
 			if existing, found := pods[name]; found {
 				// this is a delete
 				delete(pods, name)
@@ -234,9 +248,9 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 		oldPods := pods
 		pods = make(map[string]*api.BoundPod)
 
-		filtered := filterInvalidPods(update.Pods, source)
+		filtered := filterInvalidPods(update.Pods, source, s.recorder)
 		for _, ref := range filtered {
-			name := podUniqueName(ref)
+			name := kubelet.GetPodFullName(ref)
 			if existing, found := oldPods[name]; found {
 				pods[name] = existing
 				if !reflect.DeepEqual(existing.Spec, ref.Spec) {
@@ -284,7 +298,7 @@ func (s *podStorage) seenSources(sources ...string) bool {
 	return s.sourcesSeen.HasAll(sources...)
 }
 
-func filterInvalidPods(pods []api.BoundPod, source string) (filtered []*api.BoundPod) {
+func filterInvalidPods(pods []api.BoundPod, source string, recorder record.EventRecorder) (filtered []*api.BoundPod) {
 	names := util.StringSet{}
 	for i := range pods {
 		pod := &pods[i]
@@ -294,7 +308,7 @@ func filterInvalidPods(pods []api.BoundPod, source string) (filtered []*api.Boun
 			// If validation fails, don't trust it any further -
 			// even Name could be bad.
 		} else {
-			name := podUniqueName(pod)
+			name := kubelet.GetPodFullName(pod)
 			if names.Has(name) {
 				errlist = append(errlist, apierrs.NewFieldDuplicate("name", pod.Name))
 			} else {
@@ -305,7 +319,7 @@ func filterInvalidPods(pods []api.BoundPod, source string) (filtered []*api.Boun
 			name := bestPodIdentString(pod)
 			err := utilerrors.NewAggregate(errlist)
 			glog.Warningf("Pod[%d] (%s) from %s failed validation, ignoring: %v", i+1, name, source, err)
-			record.Eventf(pod, "failedValidation", "Error validating pod %s from %s, ignoring: %v", name, source, err)
+			recorder.Eventf(pod, "failedValidation", "Error validating pod %s from %s, ignoring: %v", name, source, err)
 			continue
 		}
 		filtered = append(filtered, pod)
@@ -337,12 +351,6 @@ func (s *podStorage) MergedState() interface{} {
 	return pods
 }
 
-// podUniqueName returns a value for a given pod that is unique across a source,
-// which is the combination of namespace and name.
-func podUniqueName(pod *api.BoundPod) string {
-	return fmt.Sprintf("%s.%s", pod.Name, pod.Namespace)
-}
-
 func bestPodIdentString(pod *api.BoundPod) string {
 	namespace := pod.Namespace
 	if namespace == "" {
@@ -353,4 +361,13 @@ func bestPodIdentString(pod *api.BoundPod) string {
 		name = "<empty-name>"
 	}
 	return fmt.Sprintf("%s.%s", name, namespace)
+}
+
+func GeneratePodName(name string) (string, error) {
+	hostname, err := os.Hostname() //TODO: kubelet name would be better
+	if err != nil {
+		return "", err
+	}
+	hostname = strings.ToLower(hostname)
+	return fmt.Sprintf("%s-%s", name, hostname), nil
 }

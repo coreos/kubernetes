@@ -17,10 +17,14 @@ limitations under the License.
 package etcd
 
 import (
+	"fmt"
+
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	kubeerr "github.com/GoogleCloudPlatform/kubernetes/pkg/api/errors"
 	etcderr "github.com/GoogleCloudPlatform/kubernetes/pkg/api/errors/etcd"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/rest"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/registry/generic"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/tools"
@@ -67,6 +71,9 @@ type Etcd struct {
 	// Return the TTL objects should be persisted with. Update is true if this
 	// is an operation against an existing object.
 	TTLFunc func(obj runtime.Object, update bool) (uint64, error)
+
+	// Returns a matcher corresponding to the provided labels and fields.
+	PredicateFunc func(label labels.Selector, field fields.Selector) generic.Matcher
 
 	// Called on all objects returned from the underlying store, after
 	// the exit hooks are invoked. Decorators are intended for integrations
@@ -117,10 +124,23 @@ func NamespaceKeyFunc(ctx api.Context, prefix string, name string) (string, erro
 	return key, nil
 }
 
-// List returns a list of all the items matching m.
-// TODO: rename this to ListPredicate, take the default predicate function on the constructor, and
-// introduce a List method that uses the default predicate function
-func (e *Etcd) List(ctx api.Context, m generic.Matcher) (runtime.Object, error) {
+// New implements RESTStorage
+func (e *Etcd) New() runtime.Object {
+	return e.NewFunc()
+}
+
+// NewList implements RESTLister
+func (e *Etcd) NewList() runtime.Object {
+	return e.NewListFunc()
+}
+
+// List returns a list of items matching labels and field
+func (e *Etcd) List(ctx api.Context, label labels.Selector, field fields.Selector) (runtime.Object, error) {
+	return e.ListPredicate(ctx, e.PredicateFunc(label, field))
+}
+
+// ListPredicate returns a list of all the items matching m.
+func (e *Etcd) ListPredicate(ctx api.Context, m generic.Matcher) (runtime.Object, error) {
 	list := e.NewListFunc()
 	err := e.Helper.ExtractToList(e.KeyRootFunc(ctx), list)
 	if err != nil {
@@ -148,7 +168,7 @@ func (e *Etcd) CreateWithName(ctx api.Context, name string, obj runtime.Object) 
 			return err
 		}
 	}
-	err = e.Helper.CreateObj(key, obj, ttl)
+	err = e.Helper.CreateObj(key, obj, nil, ttl)
 	err = etcderr.InterpretCreateError(err, e.EndpointName, name)
 	if err == nil && e.Decorator != nil {
 		err = e.Decorator(obj)
@@ -177,7 +197,7 @@ func (e *Etcd) Create(ctx api.Context, obj runtime.Object) (runtime.Object, erro
 		}
 	}
 	out := e.NewFunc()
-	if err := e.Helper.Create(key, obj, out, ttl); err != nil {
+	if err := e.Helper.CreateObj(key, obj, out, ttl); err != nil {
 		err = etcderr.InterpretCreateError(err, e.EndpointName, name)
 		err = rest.CheckGeneratedNameError(e.CreateStrategy, err, obj)
 		return nil, err
@@ -209,7 +229,7 @@ func (e *Etcd) UpdateWithName(ctx api.Context, name string, obj runtime.Object) 
 			return err
 		}
 	}
-	err = e.Helper.SetObj(key, obj, ttl)
+	err = e.Helper.SetObj(key, obj, nil, ttl)
 	err = etcderr.InterpretUpdateError(err, e.EndpointName, name)
 	if err == nil && e.Decorator != nil {
 		err = e.Decorator(obj)
@@ -228,6 +248,7 @@ func (e *Etcd) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool
 	if err != nil {
 		return nil, false, err
 	}
+	// TODO: expose TTL
 	creating := false
 	out := e.NewFunc()
 	err = e.Helper.AtomicUpdate(key, out, true, func(existing runtime.Object) (runtime.Object, error) {
@@ -237,7 +258,7 @@ func (e *Etcd) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool
 		}
 		if version == 0 {
 			if !e.UpdateStrategy.AllowCreateOnUpdate() {
-				return nil, kubeerr.NewAlreadyExists(e.EndpointName, name)
+				return nil, kubeerr.NewNotFound(e.EndpointName, name)
 			}
 			creating = true
 			if err := rest.BeforeCreate(e.CreateStrategy, ctx, obj); err != nil {
@@ -245,13 +266,22 @@ func (e *Etcd) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool
 			}
 			return obj, nil
 		}
+
 		creating = false
+		newVersion, err := e.Helper.ResourceVersioner.ResourceVersion(obj)
+		if err != nil {
+			return nil, err
+		}
+		if newVersion != version {
+			// TODO: return the most recent version to a client?
+			return nil, kubeerr.NewConflict(e.EndpointName, name, fmt.Errorf("the resource was updated to %d", version))
+		}
 		if err := rest.BeforeUpdate(e.UpdateStrategy, ctx, obj, existing); err != nil {
 			return nil, err
 		}
-		// TODO: expose TTL
 		return obj, nil
 	})
+
 	if err != nil {
 		if creating {
 			err = etcderr.InterpretCreateError(err, e.EndpointName, name)
@@ -327,11 +357,15 @@ func (e *Etcd) Delete(ctx api.Context, name string) (runtime.Object, error) {
 	return &api.Status{Status: api.StatusSuccess}, nil
 }
 
-// Watch starts a watch for the items that m matches.
+// WatchPredicate starts a watch for the items that m matches.
 // TODO: Detect if m references a single object instead of a list.
-// TODO: rename this to WatchPredicate, take the default predicate function on the constructor, and
-// introduce a Watch method that uses the default predicate function
-func (e *Etcd) Watch(ctx api.Context, m generic.Matcher, resourceVersion string) (watch.Interface, error) {
+func (e *Etcd) Watch(ctx api.Context, label labels.Selector, field fields.Selector, resourceVersion string) (watch.Interface, error) {
+	return e.WatchPredicate(ctx, e.PredicateFunc(label, field), resourceVersion)
+}
+
+// WatchPredicate starts a watch for the items that m matches.
+// TODO: Detect if m references a single object instead of a list.
+func (e *Etcd) WatchPredicate(ctx api.Context, m generic.Matcher, resourceVersion string) (watch.Interface, error) {
 	version, err := tools.ParseWatchResourceVersion(resourceVersion, e.EndpointName)
 	if err != nil {
 		return nil, err

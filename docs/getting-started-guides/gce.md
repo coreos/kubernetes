@@ -77,7 +77,7 @@ can create a pod like this:
 
 ```bash
 cd kubernetes
-cluster/kubectl.sh create -f api/examples/pod.json
+cluster/kubectl.sh create -f docs/getting-started-guides/pod.json
 ```
 
 Where pod.json contains something like:
@@ -104,7 +104,7 @@ Where pod.json contains something like:
           "initialDelaySeconds": 30,
           "httpGet": {
             "path": "/index.html",
-            "port": "8081"
+            "port": 8081
           }
         }
       }]

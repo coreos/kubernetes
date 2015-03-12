@@ -303,6 +303,7 @@ function kube::build::build_image() {
     api
     build
     cmd
+    docs/getting-started-guides
     examples
     Godeps/_workspace/src
     Godeps/Godeps.json
@@ -678,7 +679,11 @@ function kube::release::create_tarball() {
   # Find gnu tar if it is available
   local tar=tar
   if which gtar &>/dev/null; then
-    tar=gtar
+      tar=gtar
+  else
+      if which gnutar &>/dev/null; then
+	  tar=gnutar
+      fi
   fi
 
   local tar_cmd=("$tar" "czf" "${tarfile}" "-C" "${stagingdir}" "kubernetes")
@@ -781,8 +786,8 @@ function kube::release::gcs::copy_release_artifacts() {
   # Having the "template" scripts from the GCE cluster deploy hosted with the
   # release is useful for GKE.  Copy everything from that directory up also.
   gsutil -m "${gcs_options[@]+${gcs_options[@]}}" cp \
-    "${RELEASE_STAGE}/full/kubernetes/cluster/gce/templates/*.sh" \
-    "${gcs_destination}extra/gce-templates/"
+    "${RELEASE_STAGE}/full/kubernetes/cluster/gce/configure-vm.sh" \
+    "${gcs_destination}extra/gce/"
 
   # Upload the "naked" binaries to GCS.  This is useful for install scripts that
   # download the binaries directly and don't need tars.

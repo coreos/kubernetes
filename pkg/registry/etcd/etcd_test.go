@@ -24,6 +24,7 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/errors"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/latest"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	etcdgeneric "github.com/GoogleCloudPlatform/kubernetes/pkg/registry/generic/etcd"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/registry/pod"
@@ -41,7 +42,7 @@ func NewTestEtcdRegistry(client tools.EtcdClient) *Registry {
 
 func NewTestEtcdRegistryWithPods(client tools.EtcdClient) *Registry {
 	helper := tools.EtcdHelper{client, latest.Codec, tools.RuntimeVersionAdapter{latest.ResourceVersioner}}
-	podStorage, _ := podetcd.NewREST(helper, nil)
+	podStorage, _, _ := podetcd.NewREST(helper, nil)
 	registry := NewRegistry(helper, pod.NewRegistry(podStorage))
 	return registry
 }
@@ -212,7 +213,7 @@ func TestEtcdCreateController(t *testing.T) {
 	fakeClient := tools.NewFakeEtcdClient(t)
 	registry := NewTestEtcdRegistry(fakeClient)
 	key, _ := makeControllerKey(ctx, "foo")
-	err := registry.CreateController(ctx, &api.ReplicationController{
+	_, err := registry.CreateController(ctx, &api.ReplicationController{
 		ObjectMeta: api.ObjectMeta{
 			Name: "foo",
 		},
@@ -242,7 +243,7 @@ func TestEtcdCreateControllerAlreadyExisting(t *testing.T) {
 	fakeClient.Set(key, runtime.EncodeOrDie(latest.Codec, &api.ReplicationController{ObjectMeta: api.ObjectMeta{Name: "foo"}}), 0)
 
 	registry := NewTestEtcdRegistry(fakeClient)
-	err := registry.CreateController(ctx, &api.ReplicationController{
+	_, err := registry.CreateController(ctx, &api.ReplicationController{
 		ObjectMeta: api.ObjectMeta{
 			Name: "foo",
 		},
@@ -259,7 +260,7 @@ func TestEtcdUpdateController(t *testing.T) {
 	key, _ := makeControllerKey(ctx, "foo")
 	resp, _ := fakeClient.Set(key, runtime.EncodeOrDie(latest.Codec, &api.ReplicationController{ObjectMeta: api.ObjectMeta{Name: "foo"}}), 0)
 	registry := NewTestEtcdRegistry(fakeClient)
-	err := registry.UpdateController(ctx, &api.ReplicationController{
+	_, err := registry.UpdateController(ctx, &api.ReplicationController{
 		ObjectMeta: api.ObjectMeta{Name: "foo", ResourceVersion: strconv.FormatUint(resp.Node.ModifiedIndex, 10)},
 		Spec: api.ReplicationControllerSpec{
 			Replicas: 2,
@@ -281,7 +282,7 @@ func TestEtcdWatchController(t *testing.T) {
 	registry := NewTestEtcdRegistry(fakeClient)
 	watching, err := registry.WatchControllers(ctx,
 		labels.Everything(),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {
@@ -310,7 +311,7 @@ func TestEtcdWatchControllersMatch(t *testing.T) {
 	registry := NewTestEtcdRegistryWithPods(fakeClient)
 	watching, err := registry.WatchControllers(ctx,
 		labels.SelectorFromSet(labels.Set{"name": "foo"}),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {
@@ -351,7 +352,7 @@ func TestEtcdWatchControllersNotMatch(t *testing.T) {
 	registry := NewTestEtcdRegistryWithPods(fakeClient)
 	watching, err := registry.WatchControllers(ctx,
 		labels.SelectorFromSet(labels.Set{"name": "foo"}),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {
@@ -417,7 +418,7 @@ func TestEtcdCreateService(t *testing.T) {
 	ctx := api.NewDefaultContext()
 	fakeClient := tools.NewFakeEtcdClient(t)
 	registry := NewTestEtcdRegistry(fakeClient)
-	err := registry.CreateService(ctx, &api.Service{
+	_, err := registry.CreateService(ctx, &api.Service{
 		ObjectMeta: api.ObjectMeta{Name: "foo"},
 	})
 	if err != nil {
@@ -447,7 +448,7 @@ func TestEtcdCreateServiceAlreadyExisting(t *testing.T) {
 	key, _ := makeServiceKey(ctx, "foo")
 	fakeClient.Set(key, runtime.EncodeOrDie(latest.Codec, &api.Service{ObjectMeta: api.ObjectMeta{Name: "foo"}}), 0)
 	registry := NewTestEtcdRegistry(fakeClient)
-	err := registry.CreateService(ctx, &api.Service{
+	_, err := registry.CreateService(ctx, &api.Service{
 		ObjectMeta: api.ObjectMeta{Name: "foo"},
 	})
 	if !errors.IsAlreadyExists(err) {
@@ -572,7 +573,7 @@ func TestEtcdUpdateService(t *testing.T) {
 			SessionAffinity: "None",
 		},
 	}
-	err := registry.UpdateService(ctx, &testService)
+	_, err := registry.UpdateService(ctx, &testService)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -678,7 +679,7 @@ func TestEtcdWatchServices(t *testing.T) {
 	registry := NewTestEtcdRegistry(fakeClient)
 	watching, err := registry.WatchServices(ctx,
 		labels.Everything(),
-		labels.SelectorFromSet(labels.Set{"name": "foo"}),
+		fields.SelectorFromSet(fields.Set{"name": "foo"}),
 		"1",
 	)
 	if err != nil {
@@ -707,7 +708,7 @@ func TestEtcdWatchServicesBadSelector(t *testing.T) {
 	_, err := registry.WatchServices(
 		ctx,
 		labels.Everything(),
-		labels.SelectorFromSet(labels.Set{"Field.Selector": "foo"}),
+		fields.SelectorFromSet(fields.Set{"Field.Selector": "foo"}),
 		"",
 	)
 	if err == nil {
@@ -717,7 +718,7 @@ func TestEtcdWatchServicesBadSelector(t *testing.T) {
 	_, err = registry.WatchServices(
 		ctx,
 		labels.SelectorFromSet(labels.Set{"Label.Selector": "foo"}),
-		labels.Everything(),
+		fields.Everything(),
 		"",
 	)
 	if err == nil {
@@ -732,7 +733,7 @@ func TestEtcdWatchEndpoints(t *testing.T) {
 	watching, err := registry.WatchEndpoints(
 		ctx,
 		labels.Everything(),
-		labels.SelectorFromSet(labels.Set{"name": "foo"}),
+		fields.SelectorFromSet(fields.Set{"name": "foo"}),
 		"1",
 	)
 	if err != nil {
@@ -761,7 +762,7 @@ func TestEtcdWatchEndpointsAcrossNamespaces(t *testing.T) {
 	watching, err := registry.WatchEndpoints(
 		ctx,
 		labels.Everything(),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {
@@ -790,7 +791,7 @@ func TestEtcdWatchEndpointsBadSelector(t *testing.T) {
 	_, err := registry.WatchEndpoints(
 		ctx,
 		labels.Everything(),
-		labels.SelectorFromSet(labels.Set{"Field.Selector": "foo"}),
+		fields.SelectorFromSet(fields.Set{"Field.Selector": "foo"}),
 		"",
 	)
 	if err == nil {
@@ -800,7 +801,7 @@ func TestEtcdWatchEndpointsBadSelector(t *testing.T) {
 	_, err = registry.WatchEndpoints(
 		ctx,
 		labels.SelectorFromSet(labels.Set{"Label.Selector": "foo"}),
-		labels.Everything(),
+		fields.Everything(),
 		"",
 	)
 	if err == nil {
@@ -925,7 +926,7 @@ func TestEtcdWatchMinion(t *testing.T) {
 	registry := NewTestEtcdRegistry(fakeClient)
 	watching, err := registry.WatchMinions(ctx,
 		labels.Everything(),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {
@@ -953,7 +954,7 @@ func TestEtcdWatchMinionsMatch(t *testing.T) {
 	registry := NewTestEtcdRegistry(fakeClient)
 	watching, err := registry.WatchMinions(ctx,
 		labels.SelectorFromSet(labels.Set{"name": "foo"}),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {
@@ -993,7 +994,7 @@ func TestEtcdWatchMinionsNotMatch(t *testing.T) {
 	registry := NewTestEtcdRegistry(fakeClient)
 	watching, err := registry.WatchMinions(ctx,
 		labels.SelectorFromSet(labels.Set{"name": "foo"}),
-		labels.Everything(),
+		fields.Everything(),
 		"1",
 	)
 	if err != nil {

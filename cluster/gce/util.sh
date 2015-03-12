@@ -20,6 +20,7 @@
 # config-default.sh.
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/../..
 source "${KUBE_ROOT}/cluster/gce/${KUBE_CONFIG_FILE-"config-default.sh"}"
+source "${KUBE_ROOT}/cluster/common.sh"
 
 NODE_INSTANCE_PREFIX="${INSTANCE_PREFIX}-minion"
 
@@ -208,6 +209,7 @@ function detect-minions () {
 # Vars set:
 #   KUBE_MASTER
 #   KUBE_MASTER_IP
+#   KUBE_MASTER_IP_INTERNAL
 function detect-master () {
   detect-project
   KUBE_MASTER=${MASTER_NAME}
@@ -233,17 +235,24 @@ function detect-master () {
 #   KUBE_USER
 #   KUBE_PASSWORD
 function get-password {
-  # go template to extract the auth-path of the current-context user
+  # templates to extract the username,password for the current-context user
   # Note: we save dot ('.') to $dot because the 'with' action overrides dot
-  local template='{{$dot := .}}{{with $ctx := index $dot "current-context"}}{{$user := index $dot "contexts" $ctx "user"}}{{index $dot "users" $user "auth-path"}}{{end}}'
-  local file=$("${KUBE_ROOT}/cluster/kubectl.sh" config view -o template --template="${template}")
-  if [[ ! -z "$file" && -r "$file" ]]; then
-    KUBE_USER=$(cat "$file" | python -c 'import json,sys;print json.load(sys.stdin)["User"]')
-    KUBE_PASSWORD=$(cat "$file" | python -c 'import json,sys;print json.load(sys.stdin)["Password"]')
-    return
+  local username='{{$dot := .}}{{with $ctx := index $dot "current-context"}}{{$user := index $dot "contexts" $ctx "user"}}{{index $dot "users" $user "username"}}{{end}}'
+  local password='{{$dot := .}}{{with $ctx := index $dot "current-context"}}{{$user := index $dot "contexts" $ctx "user"}}{{index $dot "users" $user "password"}}{{end}}'
+  KUBE_USER=$("${KUBE_ROOT}/cluster/kubectl.sh" config view -o template --template="${username}")
+  KUBE_PASSWORD=$("${KUBE_ROOT}/cluster/kubectl.sh" config view -o template --template="${password}")
+  if [[ -z "${KUBE_USER}" || -z "${KUBE_PASSWORD}" ]]; then
+    KUBE_USER=admin
+    KUBE_PASSWORD=$(python -c 'import string,random; print "".join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(16))')
   fi
-  KUBE_USER=admin
-  KUBE_PASSWORD=$(python -c 'import string,random; print "".join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(16))')
+}
+
+# Set MASTER_HTPASSWD
+function set-master-htpasswd {
+  python "${KUBE_ROOT}/third_party/htpasswd/htpasswd.py" \
+    -b -c "${KUBE_TEMP}/htpasswd" "$KUBE_USER" "$KUBE_PASSWORD"
+  local htpasswd
+  MASTER_HTPASSWD=$(cat "${KUBE_TEMP}/htpasswd")
 }
 
 # Generate authentication token for admin user. Will
@@ -332,6 +341,8 @@ function create-route {
 # $1: The name of the instance template.
 # $2: The scopes flag.
 # $3: The minion start script metadata from file.
+# $4: The kube-env metadata.
+# $5: Raw metadata
 function create-node-template {
   detect-project
   local attempt=0
@@ -347,7 +358,8 @@ function create-node-template {
       --network "${NETWORK}" \
       $2 \
       --can-ip-forward \
-      --metadata-from-file "$3"; then
+      --metadata-from-file "$3" "$4" \
+      --metadata "$5"; then
         if (( attempt > 5 )); then
           echo -e "${color_red}Failed to create instance template $1 ${color_norm}"
           exit 2
@@ -383,25 +395,99 @@ function add-instance-metadata {
   done
 }
 
+# Robustly try to add metadata on an instance, from a file.
+# $1: The name of the instace.
+# $2: The metadata key=file pair to add.
+function add-instance-metadata-from-file {
+  detect-project
+  local attempt=0
+  while true; do
+    if ! gcloud compute instances add-metadata "$1" \
+      --project "${PROJECT}" \
+      --zone "${ZONE}" \
+      --metadata-from-file "$2"; then
+        if (( attempt > 5 )); then
+          echo -e "${color_red}Failed to add instance metadata in $1 ${color_norm}"
+          exit 2
+        fi
+        echo -e "${color_yellow}Attempt $(($attempt+1)) failed to add metadata in $1. Retrying.${color_norm}"
+        attempt=$(($attempt+1))
+    else
+        break
+    fi
+  done
+}
+
+# Quote something appropriate for a yaml string.
+#
+# TODO(zmerlynn): Note that this function doesn't so much "quote" as
+# "strip out quotes", and we really should be using a YAML library for
+# this, but PyYAML isn't shipped by default, and *rant rant rant ... SIGH*
+function yaml-quote {
+  echo "'$(echo "${@}" | sed -e "s/'/''/g")'"
+}
+
+# $1: if 'true', we're building a master yaml, else a node
+function build-kube-env {
+  local master=$1
+  local file=$2
+
+  rm -f ${file}
+  cat >$file <<EOF
+ENV_TIMESTAMP: $(yaml-quote $(date -uIs))
+KUBERNETES_MASTER: $(yaml-quote ${master})
+INSTANCE_PREFIX: $(yaml-quote ${INSTANCE_PREFIX})
+NODE_INSTANCE_PREFIX: $(yaml-quote ${NODE_INSTANCE_PREFIX})
+SERVER_BINARY_TAR_URL: $(yaml-quote ${SERVER_BINARY_TAR_URL})
+SALT_TAR_URL: $(yaml-quote ${SALT_TAR_URL})
+PORTAL_NET: $(yaml-quote ${PORTAL_NET})
+ENABLE_CLUSTER_MONITORING: $(yaml-quote ${ENABLE_CLUSTER_MONITORING:-false})
+ENABLE_NODE_MONITORING: $(yaml-quote ${ENABLE_NODE_MONITORING:-false})
+ENABLE_CLUSTER_LOGGING: $(yaml-quote ${ENABLE_CLUSTER_LOGGING:-false})
+ENABLE_NODE_LOGGING: $(yaml-quote ${ENABLE_NODE_LOGGING:-false})
+LOGGING_DESTINATION: $(yaml-quote ${LOGGING_DESTINATION:-})
+ELASTICSEARCH_LOGGING_REPLICAS: $(yaml-quote ${ELASTICSEARCH_LOGGING_REPLICAS:-})
+ENABLE_CLUSTER_DNS: $(yaml-quote ${ENABLE_CLUSTER_DNS:-false})
+DNS_REPLICAS: $(yaml-quote ${DNS_REPLICAS:-})
+DNS_SERVER_IP: $(yaml-quote ${DNS_SERVER_IP:-})
+DNS_DOMAIN: $(yaml-quote ${DNS_DOMAIN:-})
+MASTER_HTPASSWD: $(yaml-quote ${MASTER_HTPASSWD})
+ADMISSION_CONTROL: $(yaml-quote ${ADMISSION_CONTROL:-})
+EOF
+
+  if [[ "${master}" != "true" ]]; then
+    cat >>$file <<EOF
+KUBERNETES_MASTER_NAME: $(yaml-quote ${MASTER_NAME})
+ZONE: $(yaml-quote ${ZONE})
+EXTRA_DOCKER_OPTS: $(yaml-quote ${EXTRA_DOCKER_OPTS})
+ENABLE_DOCKER_REGISTRY_CACHE: $(yaml-quote ${ENABLE_DOCKER_REGISTRY_CACHE:-false})
+EOF
+  fi
+}
+
+function write-master-env {
+  build-kube-env true "${KUBE_TEMP}/master-kube-env.yaml"
+}
+
+function write-node-env {
+  build-kube-env false "${KUBE_TEMP}/node-kube-env.yaml"
+}
+
 # Instantiate a kubernetes cluster
 #
 # Assumed vars
 #   KUBE_ROOT
 #   <Various vars set in config file>
 function kube-up {
+  ensure-temp-dir
   detect-project
+
+  get-password
+  set-master-htpasswd
 
   # Make sure we have the tar files staged on Google Storage
   find-release-tars
   upload-server-tars
-
-  ensure-temp-dir
-
-  get-password
-  python "${KUBE_ROOT}/third_party/htpasswd/htpasswd.py" \
-    -b -c "${KUBE_TEMP}/htpasswd" "$KUBE_USER" "$KUBE_PASSWORD"
-  local htpasswd
-  htpasswd=$(cat "${KUBE_TEMP}/htpasswd")
 
   if ! gcloud compute networks --project "${PROJECT}" describe "${NETWORK}" &>/dev/null; then
     echo "Creating new network: ${NETWORK}"
@@ -426,7 +512,7 @@ function kube-up {
       --allow "tcp:22" &
   fi
 
-  echo "Starting VMs and configuring firewalls"
+  echo "Starting master and configuring firewalls"
   gcloud compute firewall-rules create "${MASTER_NAME}-https" \
     --project "${PROJECT}" \
     --network "${NETWORK}" \
@@ -440,33 +526,13 @@ function kube-up {
     --zone "${ZONE}" \
     --size "10GB"
 
-  (
-    echo "#! /bin/bash"
-    echo "mkdir -p /var/cache/kubernetes-install"
-    echo "cd /var/cache/kubernetes-install"
-    echo "readonly MASTER_NAME='${MASTER_NAME}'"
-    echo "readonly NODE_INSTANCE_PREFIX='${NODE_INSTANCE_PREFIX}'"
-    echo "readonly SERVER_BINARY_TAR_URL='${SERVER_BINARY_TAR_URL}'"
-    echo "readonly SALT_TAR_URL='${SALT_TAR_URL}'"
-    echo "readonly MASTER_HTPASSWD='${htpasswd}'"
-    echo "readonly PORTAL_NET='${PORTAL_NET}'"
-    echo "readonly ENABLE_CLUSTER_MONITORING='${ENABLE_CLUSTER_MONITORING:-false}'"
-    echo "readonly ENABLE_NODE_MONITORING='${ENABLE_NODE_MONITORING:-false}'"
-    echo "readonly ENABLE_CLUSTER_LOGGING='${ENABLE_CLUSTER_LOGGING:-false}'"
-    echo "readonly ENABLE_NODE_LOGGING='${ENABLE_NODE_LOGGING:-false}'"
-    echo "readonly LOGGING_DESTINATION='${LOGGING_DESTINATION:-}'"
-    echo "readonly ELASTICSEARCH_LOGGING_REPLICAS='${ELASTICSEARCH_LOGGING_REPLICAS:-}'"
-    echo "readonly ENABLE_CLUSTER_DNS='${ENABLE_CLUSTER_DNS:-false}'"
-    echo "readonly DNS_REPLICAS='${DNS_REPLICAS:-}'"
-    echo "readonly DNS_SERVER_IP='${DNS_SERVER_IP:-}'"
-    echo "readonly DNS_DOMAIN='${DNS_DOMAIN:-}'"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/common.sh"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/mount-pd.sh"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/create-dynamic-salt-files.sh"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/download-release.sh"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/salt-master.sh"
-  ) > "${KUBE_TEMP}/master-start.sh"
+  # Generate a bearer token for this cluster. We push this separately
+  # from the other cluster variables so that the client (this
+  # computer) can forget it later. This should disappear with
+  # https://github.com/GoogleCloudPlatform/kubernetes/issues/3168
+  KUBELET_TOKEN=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
 
+  write-master-env
   gcloud compute instances create "${MASTER_NAME}" \
     --project "${PROJECT}" \
     --zone "${ZONE}" \
@@ -476,7 +542,9 @@ function kube-up {
     --tags "${MASTER_TAG}" \
     --network "${NETWORK}" \
     --scopes "storage-ro" "compute-rw" \
-    --metadata-from-file "startup-script=${KUBE_TEMP}/master-start.sh" \
+    --metadata-from-file \
+      "startup-script=${KUBE_ROOT}/cluster/gce/configure-vm.sh" \
+      "kube-env=${KUBE_TEMP}/master-kube-env.yaml" \
     --disk name="${MASTER_NAME}-pd" device-name=master-pd mode=rw boot=no auto-delete=no &
 
   # Create a single firewall rule for all minions.
@@ -491,8 +559,11 @@ function kube-up {
     fi
   fi
 
-  # Wait for last batch of jobs.
+  # Wait for last batch of jobs
   wait-for-jobs
+  add-instance-metadata "${MASTER_NAME}" "kube-token=${KUBELET_TOKEN}"
+
+  echo "Creating minions."
 
   local -a scope_flags=()
   if (( "${#MINION_SCOPES[@]}" > 0 )); then
@@ -501,23 +572,11 @@ function kube-up {
     scope_flags=("--no-scopes")
   fi
 
-  (
-      echo "#! /bin/bash"
-      echo "ZONE='${ZONE}'"
-      echo "MASTER_NAME='${MASTER_NAME}'"
-      echo "until MINION_IP_RANGE=\$(curl --fail --silent -H 'Metadata-Flavor: Google'\\"
-      echo "        http://metadata/computeMetadata/v1/instance/attributes/node-ip-range); do"
-      echo "    echo 'Waiting for metadata MINION_IP_RANGE...'"
-      echo "    sleep 3"
-      echo "done"
-      echo "EXTRA_DOCKER_OPTS='${EXTRA_DOCKER_OPTS}'"
-      echo "ENABLE_DOCKER_REGISTRY_CACHE='${ENABLE_DOCKER_REGISTRY_CACHE:-false}'"
-      grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/common.sh"
-      grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/salt-minion.sh"
-    ) > "${KUBE_TEMP}/minion-start.sh"
-
+  write-node-env
   create-node-template "${NODE_INSTANCE_PREFIX}-template" "${scope_flags[*]}" \
-      "startup-script=${KUBE_TEMP}/minion-start.sh"
+    "startup-script=${KUBE_ROOT}/cluster/gce/configure-vm.sh" \
+    "kube-env=${KUBE_TEMP}/node-kube-env.yaml" \
+    "kube-token=${KUBELET_TOKEN}"
 
   gcloud preview managed-instance-groups --zone "${ZONE}" \
       create "${NODE_INSTANCE_PREFIX}-group" \
@@ -530,7 +589,17 @@ function kube-up {
   # to gcloud's deficiency.
   wait-for-minions-to-run
 
+  # Give the master an initial node list (it's waiting in
+  # startup). This resolves a bit of a chicken-egg issue: The minions
+  # need to know the master's ip, so we boot the master first. The
+  # master still needs to know the initial minion list (until all the
+  # pieces #156 are complete), so we have it wait on the minion
+  # boot. (The minions further wait until the loop below, where CIDRs
+  # get filled in.)
   detect-minion-names
+  local kube_node_names
+  kube_node_names=$(IFS=,; echo "${MINION_NAMES[*]}")
+  add-instance-metadata "${MASTER_NAME}" "kube-node-names=${kube_node_names}"
 
   # Create the routes and set IP ranges to instance metadata, 5 instances at a time.
   for (( i=0; i<${#MINION_NAMES[@]}; i++)); do
@@ -543,6 +612,7 @@ function kube-up {
     fi
 
   done
+
   # Wait for last batch of jobs.
   wait-for-jobs
 
@@ -573,44 +643,22 @@ function kube-up {
 
   echo "Kubernetes cluster created."
 
-  local kube_cert="kubecfg.crt"
-  local kube_key="kubecfg.key"
-  local ca_cert="kubernetes.ca.crt"
-  # TODO use token instead of kube_auth
-  local kube_auth="kubernetes_auth"
-
-  local kubectl="${KUBE_ROOT}/cluster/kubectl.sh"
-  local context="${PROJECT}_${INSTANCE_PREFIX}"
-  local user="${context}-admin"
-  local config_dir="${HOME}/.kube/${context}"
+  # TODO use token instead of basic auth
+  export KUBECONFIG="${HOME}/.kube/.kubeconfig"
+  export KUBE_CERT="/tmp/kubecfg.crt"
+  export KUBE_KEY="/tmp/kubecfg.key"
+  export CA_CERT="/tmp/kubernetes.ca.crt"
+  export CONTEXT="${PROJECT}_${INSTANCE_PREFIX}"
 
   # TODO: generate ADMIN (and KUBELET) tokens and put those in the master's
   # config file.  Distribute the same way the htpasswd is done.
   (
-   mkdir -p "${config_dir}"
    umask 077
-   gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "${MASTER_NAME}" --command "sudo cat /srv/kubernetes/kubecfg.crt" >"${config_dir}/${kube_cert}" 2>/dev/null
-   gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "${MASTER_NAME}" --command "sudo cat /srv/kubernetes/kubecfg.key" >"${config_dir}/${kube_key}" 2>/dev/null
-   gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "${MASTER_NAME}" --command "sudo cat /srv/kubernetes/ca.crt" >"${config_dir}/${ca_cert}" 2>/dev/null
+   gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "${MASTER_NAME}" --command "sudo cat /srv/kubernetes/kubecfg.crt" >"${KUBE_CERT}" 2>/dev/null
+   gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "${MASTER_NAME}" --command "sudo cat /srv/kubernetes/kubecfg.key" >"${KUBE_KEY}" 2>/dev/null
+   gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "${MASTER_NAME}" --command "sudo cat /srv/kubernetes/ca.crt" >"${CA_CERT}" 2>/dev/null
 
-   "${kubectl}" config set-cluster "${context}" --server="https://${KUBE_MASTER_IP}" --certificate-authority="${config_dir}/${ca_cert}" --global
-   "${kubectl}" config set-credentials "${user}" --auth-path="${config_dir}/${kube_auth}" --global
-   "${kubectl}" config set-context "${context}" --cluster="${context}" --user="${user}" --global
-   "${kubectl}" config use-context "${context}" --global
-
-   cat << EOF > "${config_dir}/${kube_auth}"
-{
-  "User": "$KUBE_USER",
-  "Password": "$KUBE_PASSWORD",
-  "CAFile": "${config_dir}/${ca_cert}",
-  "CertFile": "${config_dir}/${kube_cert}",
-  "KeyFile": "${config_dir}/${kube_key}"
-}
-EOF
-
-   chmod 0600 "${config_dir}/${kube_auth}" "${config_dir}/$kube_cert" \
-     "${config_dir}/${kube_key}" "${config_dir}/${ca_cert}"
-   echo "Wrote ${config_dir}/${kube_auth}"
+   create-kubeconfig
   )
 
   echo "Sanity checking cluster..."
@@ -658,7 +706,7 @@ EOF
   echo
   echo -e "${color_yellow}  https://${KUBE_MASTER_IP}"
   echo
-  echo -e "${color_green}The user name and password to use is located in ${config_dir}/${kube_auth}.${color_norm}"
+  echo -e "${color_green}The user name and password to use is located in ${KUBECONFIG}.${color_norm}"
   echo
 
 }
@@ -694,6 +742,14 @@ function kube-down {
     --delete-disks all \
     --zone "${ZONE}" \
     "${MASTER_NAME}" || true
+
+  # Delete the master pd (possibly leaked by kube-up if master create failed)
+  gcloud compute disks delete \
+    --project "${PROJECT}" \
+    --quiet \
+    --zone "${ZONE}" \
+    "${MASTER_NAME}"-pd || true
+
   # Find out what minions are running.
   local -a minions
   minions=( $(gcloud compute instances list \
@@ -745,31 +801,56 @@ function kube-down {
     --quiet \
     "${MASTER_NAME}-ip" || true
 
+  export KUBECONFIG="${HOME}/.kube/.kubeconfig"
+  export CONTEXT="${PROJECT}_${INSTANCE_PREFIX}"
+  clear-kubeconfig
 }
 
 # Update a kubernetes cluster with latest source
 function kube-push {
+  OUTPUT=${KUBE_ROOT}/_output/logs
+  mkdir -p ${OUTPUT}
+
+  ensure-temp-dir
   detect-project
   detect-master
+  detect-minion-names
+  get-password
+  set-master-htpasswd
 
   # Make sure we have the tar files staged on Google Storage
   find-release-tars
   upload-server-tars
 
-  (
-    echo "#! /bin/bash"
-    echo "mkdir -p /var/cache/kubernetes-install"
-    echo "cd /var/cache/kubernetes-install"
-    echo "readonly SERVER_BINARY_TAR_URL='${SERVER_BINARY_TAR_URL}'"
-    echo "readonly SALT_TAR_URL='${SALT_TAR_URL}'"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/common.sh"
-    grep -v "^#" "${KUBE_ROOT}/cluster/gce/templates/download-release.sh"
-    echo "echo Executing configuration"
-    echo "sudo salt '*' mine.update"
-    echo "sudo salt --force-color '*' state.highstate"
-  ) | gcloud compute ssh --project "${PROJECT}" --zone "$ZONE" "$KUBE_MASTER" --command "sudo bash"
+  write-master-env
+  add-instance-metadata-from-file "${KUBE_MASTER}" "kube-env=${KUBE_TEMP}/master-kube-env.yaml"
+  echo "Pushing to master (log at ${OUTPUT}/kube-push-${KUBE_MASTER}.log) ..."
+  cat ${KUBE_ROOT}/cluster/gce/configure-vm.sh | gcloud compute ssh --ssh-flag="-o LogLevel=quiet" --project "${PROJECT}" --zone "${ZONE}" "${KUBE_MASTER}" --command "sudo bash -s -- --push" &> ${OUTPUT}/kube-push-"${KUBE_MASTER}".log
 
-  get-password
+  echo "Pushing metadata to minions... "
+  write-node-env
+  for (( i=0; i<${#MINION_NAMES[@]}; i++)); do
+    add-instance-metadata-from-file "${MINION_NAMES[$i]}" "kube-env=${KUBE_TEMP}/node-kube-env.yaml" &
+  done
+  wait-for-jobs
+  echo "Done"
+
+  for (( i=0; i<${#MINION_NAMES[@]}; i++)); do
+    echo "Starting push to node (log at ${OUTPUT}/kube-push-${MINION_NAMES[$i]}.log) ..."
+    cat ${KUBE_ROOT}/cluster/gce/configure-vm.sh | gcloud compute ssh --ssh-flag="-o LogLevel=quiet" --project "${PROJECT}" --zone "${ZONE}" "${MINION_NAMES[$i]}" --command "sudo bash -s -- --push" &> ${OUTPUT}/kube-push-"${MINION_NAMES[$i]}".log &
+  done
+
+  echo -n "Waiting for node pushes... "
+  wait-for-jobs
+  echo "Done"
+
+  # TODO(zmerlynn): Re-create instance-template with the new
+  # node-kube-env. This isn't important until the node-ip-range issue
+  # is solved (because that's blocking automatic dynamic nodes from
+  # working). The node-kube-env has to be composed with the kube-token
+  # metadata. Ideally we would have
+  # https://github.com/GoogleCloudPlatform/kubernetes/issues/3168
+  # implemented before then, though, so avoiding this mess until then.
 
   echo
   echo "Kubernetes cluster is running.  The master is running at:"
@@ -778,7 +859,6 @@ function kube-push {
   echo
   echo "The user name and password to use is located in ~/.kubernetes_auth."
   echo
-
 }
 
 # -----------------------------------------------------------------------------
@@ -803,6 +883,7 @@ function test-setup {
   detect-project
 
   # Open up port 80 & 8080 so common containers on minions can be reached
+  # TODO(roberthbailey): Remove this once we are no longer relying on hostPorts.
   gcloud compute firewall-rules create \
     --project "${PROJECT}" \
     --target-tags "${MINION_TAG}" \
@@ -839,49 +920,9 @@ function restart-kube-proxy {
   ssh-to-node "$1" "sudo /etc/init.d/kube-proxy restart"
 }
 
-# Restart the kube-proxy on a node ($1)
+# Restart the kube-apiserver on a node ($1)
 function restart-apiserver {
   ssh-to-node "$1" "sudo /etc/init.d/kube-apiserver restart"
-}
-
-# Setup monitoring firewalls using heapster and InfluxDB
-function setup-monitoring-firewall {
-  if [[ "${ENABLE_CLUSTER_MONITORING}" != "true" ]]; then
-    return
-  fi
-
-  echo "Setting up firewalls to Heapster based cluster monitoring."
-
-  detect-project
-  gcloud compute firewall-rules create "${INSTANCE_PREFIX}-monitoring-heapster" --project "${PROJECT}" \
-    --allow tcp:80 tcp:8083 tcp:8086 --target-tags="${MINION_TAG}" --network="${NETWORK}"
-
-  local kubectl="${KUBE_ROOT}/cluster/kubectl.sh"
-  local grafana_host=""
-  echo "waiting for monitoring pods to be scheduled."
-  for i in `seq 1 10`; do
-    grafana_host=$("${kubectl}" get pods -l name=influxGrafana -o template -t {{range.items}}{{.currentState.hostIP}}:{{end}} | sed s/://g)
-    if [[ ${grafana_host} != *"<"* ]]; then
-	  break
-    fi
-    sleep 10
-  done
-  if [[ ${grafana_host} != *"<"* ]]; then
-    echo
-    echo -e "${color_green}Grafana dashboard will be available at ${color_yellow}http://${grafana_host}${color_green}. Wait for the monitoring dashboard to be online.${color_norm}"
-    echo
-  else
-    echo -e "${color_red}Monitoring pods failed to be scheduled!${color_norm}"
-  fi
-}
-
-function teardown-monitoring-firewall {
-  if [[ "${ENABLE_CLUSTER_MONITORING}" != "true" ]]; then
-    return
-  fi
-
-  detect-project
-  gcloud compute firewall-rules delete -q "${INSTANCE_PREFIX}-monitoring-heapster" --project "${PROJECT}" || true
 }
 
 function setup-logging-firewall {
@@ -911,12 +952,9 @@ function setup-logging-firewall {
     sleep 10
   done
 
-  local -r region="${ZONE:0:${#ZONE}-2}"
-  local -r es_ip=$(gcloud compute forwarding-rules --project "${PROJECT}" describe --region "${region}" elasticsearch-logging | grep IPAddress | awk '{print $2}')
-  local -r kibana_ip=$(gcloud compute forwarding-rules --project "${PROJECT}" describe --region "${region}" kibana-logging | grep IPAddress | awk '{print $2}')
   echo
-  echo -e "${color_green}Cluster logs are ingested into Elasticsearch running at ${color_yellow}http://${es_ip}:9200"
-  echo -e "${color_green}Kibana logging dashboard will be available at ${color_yellow}http://${kibana_ip}:5601${color_norm}"
+  echo -e "${color_green}Cluster logs are ingested into Elasticsearch running at ${color_yellow}https://${KUBE_MASTER_IP}/api/v1beta1/proxy/services/elasticsearch-logging/"
+  echo -e "${color_green}Kibana logging dashboard will be available at ${color_yellow}https://${KUBE_MASTER_IP}/api/v1beta1/proxy/services/kibana-logging/${color_norm} (note the trailing slash)"
   echo
 }
 

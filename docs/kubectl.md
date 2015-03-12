@@ -4,13 +4,14 @@ kubectl controls the Kubernetes cluster manager
 
 ### Synopsis
 
-```
+
 kubectl controls the Kubernetes cluster manager.
 
 Find more information at https://github.com/GoogleCloudPlatform/kubernetes.
-```
 
+```
 kubectl
+```
 
 ### Options
 
@@ -45,6 +46,7 @@ kubectl
 
 ### SEE ALSO
 * [kubectl-version](kubectl-version.md)
+* [kubectl-clusterinfo](kubectl-clusterinfo.md)
 * [kubectl-proxy](kubectl-proxy.md)
 * [kubectl-get](kubectl-get.md)
 * [kubectl-describe](kubectl-describe.md)

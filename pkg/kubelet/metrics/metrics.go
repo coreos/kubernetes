@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"sync"
+	"time"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/dockertools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/types"
@@ -35,9 +36,36 @@ var (
 			Help:      "Image pull latency in microseconds.",
 		},
 	)
-	// TODO(vmarmol): Containers per pod
-	// TODO(vmarmol): Latency of pod startup
-	// TODO(vmarmol): Latency of SyncPods
+	ContainersPerPodCount = prometheus.NewSummary(
+		prometheus.SummaryOpts{
+			Subsystem: kubeletSubsystem,
+			Name:      "containers_per_pod_count",
+			Help:      "The number of containers per pod.",
+		},
+	)
+	SyncPodLatency = prometheus.NewSummaryVec(
+		prometheus.SummaryOpts{
+			Subsystem: kubeletSubsystem,
+			Name:      "sync_pod_latency_microseconds",
+			Help:      "Latency in microseconds to sync a single pod. Broken down by operation type: create, update, or sync",
+		},
+		[]string{"operation_type"},
+	)
+	SyncPodsLatency = prometheus.NewSummary(
+		prometheus.SummaryOpts{
+			Subsystem: kubeletSubsystem,
+			Name:      "sync_pods_latency_microseconds",
+			Help:      "Latency in microseconds to sync all pods.",
+		},
+	)
+	DockerOperationsLatency = prometheus.NewSummaryVec(
+		prometheus.SummaryOpts{
+			Subsystem: kubeletSubsystem,
+			Name:      "docker_operations_latency_microseconds",
+			Help:      "Latency in microseconds of Docker operations. Broken down by operation type.",
+		},
+		[]string{"operation_type"},
+	)
 )
 
 var registerMetrics sync.Once
@@ -47,8 +75,38 @@ func Register(containerCache dockertools.DockerCache) {
 	// Register the metrics.
 	registerMetrics.Do(func() {
 		prometheus.MustRegister(ImagePullLatency)
+		prometheus.MustRegister(SyncPodLatency)
+		prometheus.MustRegister(DockerOperationsLatency)
+		prometheus.MustRegister(SyncPodsLatency)
+		prometheus.MustRegister(ContainersPerPodCount)
 		prometheus.MustRegister(newPodAndContainerCollector(containerCache))
 	})
+}
+
+type SyncPodType int
+
+const (
+	SyncPodCreate SyncPodType = iota
+	SyncPodUpdate
+	SyncPodSync
+)
+
+func (self SyncPodType) String() string {
+	switch self {
+	case SyncPodCreate:
+		return "create"
+	case SyncPodUpdate:
+		return "update"
+	case SyncPodSync:
+		return "sync"
+	default:
+		return "unknown"
+	}
+}
+
+// Gets the time since the specified start in microseconds.
+func SinceInMicroseconds(start time.Time) float64 {
+	return float64(time.Since(start).Nanoseconds() / time.Microsecond.Nanoseconds())
 }
 
 func newPodAndContainerCollector(containerCache dockertools.DockerCache) *podAndContainerCollector {

@@ -18,12 +18,11 @@ package e2e
 
 import (
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"time"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/client"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubectl"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 
@@ -64,7 +63,7 @@ func ServeImageOrFail(c *client.Client, test string, image string) {
 	replicas := 2
 
 	// Create a replication controller for a service
-	// that serves its hostname on port 8080.
+	// that serves its hostname.
 	// The source for the Docker containter kubernetes/serve_hostname is
 	// in contrib/for-demos/serve_hostname
 	By(fmt.Sprintf("Creating replication controller %s", name))
@@ -86,7 +85,7 @@ func ServeImageOrFail(c *client.Client, test string, image string) {
 						{
 							Name:  name,
 							Image: image,
-							Ports: []api.Port{{ContainerPort: 9376, HostPort: 8080}},
+							Ports: []api.ContainerPort{{ContainerPort: 9376}},
 						},
 					},
 				},
@@ -97,14 +96,13 @@ func ServeImageOrFail(c *client.Client, test string, image string) {
 	// Cleanup the replication controller when we are done.
 	defer func() {
 		// Resize the replication controller to zero to get rid of pods.
-		controller.Spec.Replicas = 0
-		if _, err = c.ReplicationControllers(ns).Update(controller); err != nil {
-			Logf("Failed to resize replication controller %s to zero: %v", name, err)
+		By("Cleaning up the replication controller")
+		rcReaper, err := kubectl.ReaperFor("ReplicationController", c)
+		if err != nil {
+			Logf("Failed to cleanup replication controller %v: %v.", controller.Name, err)
 		}
-
-		// Delete the replication controller.
-		if err = c.ReplicationControllers(ns).Delete(name); err != nil {
-			Logf("Failed to delete replication controller %s: %v", name, err)
+		if _, err = rcReaper.Stop(ns, controller.Name); err != nil {
+			Logf("Failed to stop replication controller %v: %v.", controller.Name, err)
 		}
 	}()
 
@@ -133,7 +131,7 @@ func ServeImageOrFail(c *client.Client, test string, image string) {
 	// Wait for the pods to enter the running state. Waiting loops until the pods
 	// are running so non-running pods cause a timeout for this test.
 	for _, pod := range pods.Items {
-		err = waitForPodRunning(c, pod.Name, 300*time.Second)
+		err = waitForPodRunning(c, pod.Name)
 		Expect(err).NotTo(HaveOccurred())
 	}
 
@@ -165,18 +163,14 @@ func ServeImageOrFail(c *client.Client, test string, image string) {
 	By("Trying to dial each unique pod")
 
 	for i, pod := range pods.Items {
-		resp, err := http.Get(fmt.Sprintf("http://%s:8080", pod.Status.HostIP))
+		body, err := c.Get().
+			Prefix("proxy").
+			Resource("pods").
+			Name(string(pod.Name)).
+			Do().
+			Raw()
 		if err != nil {
 			Failf("Controller %s: Failed to GET from replica %d: %v", name, i+1, err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			Failf("Controller %s: Expected OK status code for replica %d but got %d", name, i+1, resp.StatusCode)
-		}
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			Failf("Controller %s: Failed to read the body of the GET response from replica %d: %v",
-				name, i+1, err)
 		}
 		// The body should be the pod name.
 		if string(body) != pod.Name {

@@ -72,6 +72,8 @@ type APIServer struct {
 	MasterServiceNamespace     string
 	RuntimeConfig              util.ConfigurationMap
 	KubeletConfig              client.KubeletConfig
+	ClusterName                string
+	SyncPodStatus              bool
 }
 
 // NewAPIServer creates a new APIServer object with default parameters
@@ -85,11 +87,13 @@ func NewAPIServer() *APIServer {
 		APIBurst:               200,
 		SecurePort:             6443,
 		APIPrefix:              "/api",
-		EventTTL:               48 * time.Hour,
+		EventTTL:               1 * time.Hour,
 		AuthorizationMode:      "AlwaysAllow",
 		AdmissionControl:       "AlwaysAdmit",
 		EnableLogsSupport:      true,
 		MasterServiceNamespace: api.NamespaceDefault,
+		ClusterName:            "kubernetes",
+		SyncPodStatus:          true,
 
 		RuntimeConfig: make(util.ConfigurationMap),
 		KubeletConfig: client.KubeletConfig{
@@ -132,7 +136,7 @@ func (s *APIServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.StorageVersion, "storage_version", s.StorageVersion, "The version to store resources with. Defaults to server preferred")
 	fs.StringVar(&s.CloudProvider, "cloud_provider", s.CloudProvider, "The provider for cloud services.  Empty string for no provider.")
 	fs.StringVar(&s.CloudConfigFile, "cloud_config", s.CloudConfigFile, "The path to the cloud provider configuration file.  Empty string for no configuration file.")
-	fs.DurationVar(&s.EventTTL, "event_ttl", s.EventTTL, "Amount of time to retain events. Default 2 days.")
+	fs.DurationVar(&s.EventTTL, "event_ttl", s.EventTTL, "Amount of time to retain events. Default 1 hour.")
 	fs.StringVar(&s.TokenAuthFile, "token_auth_file", s.TokenAuthFile, "If set, the file that will be used to secure the secure port of the API server via token authentication.")
 	fs.StringVar(&s.AuthorizationMode, "authorization_mode", s.AuthorizationMode, "Selects how to do authorization on the secure port.  One of: "+strings.Join(apiserver.AuthorizationModeChoices, ","))
 	fs.StringVar(&s.AuthorizationPolicyFile, "authorization_policy_file", s.AuthorizationPolicyFile, "File with authorization policy in csv format, used with --authorization_mode=ABAC, on the secure port.")
@@ -144,8 +148,10 @@ func (s *APIServer) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&s.AllowPrivileged, "allow_privileged", s.AllowPrivileged, "If true, allow privileged containers.")
 	fs.Var(&s.PortalNet, "portal_net", "A CIDR notation IP range from which to assign portal IPs. This must not overlap with any IP ranges assigned to nodes for pods.")
 	fs.StringVar(&s.MasterServiceNamespace, "master_service_namespace", s.MasterServiceNamespace, "The namespace from which the kubernetes master services should be injected into pods")
+	fs.BoolVar(&s.SyncPodStatus, "sync_pod_status", s.SyncPodStatus, "If true, periodically fetch pods statuses from kubelets.")
 	fs.Var(&s.RuntimeConfig, "runtime_config", "A set of key=value pairs that describe runtime configuration that may be passed to the apiserver.")
 	client.BindKubeletClientConfigFlags(fs, &s.KubeletConfig)
+	fs.StringVar(&s.ClusterName, "cluster_name", s.ClusterName, "The instance prefix for the cluster")
 }
 
 // TODO: Longer term we should read this from some config store, rather than a flag.
@@ -241,6 +247,8 @@ func (s *APIServer) Run(_ []string) error {
 		AdmissionControl:       admissionController,
 		EnableV1Beta3:          v1beta3,
 		MasterServiceNamespace: s.MasterServiceNamespace,
+		ClusterName:            s.ClusterName,
+		SyncPodStatus:          s.SyncPodStatus,
 	}
 	m := master.New(config)
 

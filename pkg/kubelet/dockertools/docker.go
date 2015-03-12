@@ -221,7 +221,6 @@ func (d *dockerContainerCommandRunner) ExecInContainer(containerId string, cmd [
 	args = append(args, fmt.Sprintf("HOSTNAME=%s", container.Config.Hostname))
 	args = append(args, container.Config.Env...)
 	args = append(args, cmd...)
-	glog.Infof("ARGS %#v", args)
 	command := exec.Command("nsenter", args...)
 	// TODO use exec.LookPath
 	if tty {
@@ -413,17 +412,23 @@ func (c DockerContainers) FindPodContainer(podFullName string, uid types.UID, co
 	return nil, false, 0
 }
 
-// Note, this might return containers belong to a different Pod instance with the same name
-func (c DockerContainers) FindContainersByPodFullName(podFullName string) map[string]*docker.APIContainers {
-	containers := make(map[string]*docker.APIContainers)
+// RemoveContainerWithID removes the container with the given containerID.
+func (c DockerContainers) RemoveContainerWithID(containerID DockerID) {
+	delete(c, containerID)
+}
+
+// FindContainersByPod returns the containers that belong to the pod.
+func (c DockerContainers) FindContainersByPod(podUID types.UID, podFullName string) DockerContainers {
+	containers := make(DockerContainers)
 
 	for _, dockerContainer := range c {
 		if len(dockerContainer.Names) == 0 {
 			continue
 		}
-		dockerManifestID, _, dockerContainerName, _ := ParseDockerName(dockerContainer.Names[0])
-		if dockerManifestID == podFullName {
-			containers[dockerContainerName] = dockerContainer
+		dockerPodName, uuid, _, _ := ParseDockerName(dockerContainer.Names[0])
+		if podUID == uuid ||
+			(podUID == "" && podFullName == dockerPodName) {
+			containers[DockerID(dockerContainer.ID)] = dockerContainer
 		}
 	}
 	return containers
@@ -590,7 +595,8 @@ func inspectContainer(client DockerInterface, dockerID, containerName, tPath str
 	return &containerStatus, nil
 }
 
-// GetDockerPodInfo returns docker info for all containers in the pod/manifest.
+// GetDockerPodInfo returns docker info for all containers in the pod/manifest and
+// infrastructure container
 func GetDockerPodInfo(client DockerInterface, manifest api.PodSpec, podFullName string, uid types.UID) (api.PodInfo, error) {
 	info := api.PodInfo{}
 	expectedContainers := make(map[string]api.Container)
@@ -712,11 +718,11 @@ func ParseDockerName(name string) (podFullName string, podUID types.UID, contain
 	if len(parts) == 0 || parts[0] != containerNamePrefix {
 		return
 	}
-	if len(parts) < 5 {
+	if len(parts) < 6 {
 		// We have at least 5 fields.  We may have more in the future.
 		// Anything with less fields than this is not something we can
 		// manage.
-		glog.Warningf("found a container with the %q prefix, but too few fields (%d): ", containerNamePrefix, len(parts), name)
+		glog.Warningf("found a container with the %q prefix, but too few fields (%d): %q", containerNamePrefix, len(parts), name)
 		return
 	}
 
@@ -732,11 +738,10 @@ func ParseDockerName(name string) (podFullName string, podUID types.UID, contain
 	}
 
 	// Pod fullname.
-	podFullName = parts[2]
+	podFullName = parts[2] + "_" + parts[3]
 
 	// Pod UID.
-	podUID = types.UID(parts[3])
-
+	podUID = types.UID(parts[4])
 	return
 }
 

@@ -11,6 +11,7 @@ desiredState:
     k8s-app: kube-dns
   podTemplate:
     labels:
+      name: kube-dns
       k8s-app: kube-dns
       kubernetes.io/cluster-service: "true"
     desiredState:
@@ -28,13 +29,13 @@ desiredState:
                     "-advertise-client-urls=http://127.0.0.1:4001",
             ]
           - name: kube2sky
-            image: kubernetes/kube2sky:1.0
+            image: kubernetes/kube2sky:1.1
             command: [
                     # entrypoint = "/kube2sky",
                     "-domain={{ pillar['dns_domain'] }}",
             ]
           - name: skydns
-            image: kubernetes/skydns:2014-12-23-001
+            image: kubernetes/skydns:2015-03-11-001
             command: [
                     # entrypoint = "/skydns",
                     "-machines=http://localhost:4001",

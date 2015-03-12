@@ -27,7 +27,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	// "reflect"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +64,7 @@ func TestRequestWithErrorWontChange(t *testing.T) {
 	if changed != &r {
 		t.Errorf("returned request should point to the same object")
 	}
-	if !api.Semantic.DeepDerivative(changed, &original) {
+	if !reflect.DeepEqual(changed, &original) {
 		t.Errorf("expected %#v, got %#v", &original, changed)
 	}
 }
@@ -129,6 +129,16 @@ func TestRequestOrdersNamespaceInPath(t *testing.T) {
 	}
 }
 
+func TestRequestOrdersSubResource(t *testing.T) {
+	r := (&Request{
+		baseURL: &url.URL{},
+		path:    "/test/",
+	}).Name("bar").Resource("baz").Namespace("foo").Suffix("test").SubResource("a", "b")
+	if s := r.finalURL(); s != "/test/namespaces/foo/baz/bar/a/b/test" {
+		t.Errorf("namespace should be in order in path: %s", s)
+	}
+}
+
 func TestRequestSetTwiceError(t *testing.T) {
 	if (&Request{}).Name("bar").Name("baz").err == nil {
 		t.Errorf("setting name twice should result in error")
@@ -139,10 +149,13 @@ func TestRequestSetTwiceError(t *testing.T) {
 	if (&Request{}).Resource("bar").Resource("baz").err == nil {
 		t.Errorf("setting resource twice should result in error")
 	}
+	if (&Request{}).SubResource("bar").SubResource("baz").err == nil {
+		t.Errorf("setting subresource twice should result in error")
+	}
 }
 
 func TestRequestParseSelectorParam(t *testing.T) {
-	r := (&Request{}).ParseSelectorParam("foo", "a")
+	r := (&Request{}).ParseSelectorParam("foo", "a=")
 	if r.err == nil || r.params != nil {
 		t.Errorf("should have set err and left params nil: %#v", r)
 	}
@@ -233,7 +246,11 @@ func TestTransformResponse(t *testing.T) {
 		if test.Response.Body == nil {
 			test.Response.Body = ioutil.NopCloser(bytes.NewReader([]byte{}))
 		}
-		response, created, err := r.transformResponse(test.Response, &http.Request{})
+		body, err := ioutil.ReadAll(test.Response.Body)
+		if err != nil {
+			t.Errorf("failed to read body of response: %v", err)
+		}
+		response, created, err := r.transformResponse(body, test.Response, &http.Request{})
 		hasErr := err != nil
 		if hasErr != test.Error {
 			t.Errorf("%d: unexpected error: %t %v", i, test.Error, err)
@@ -307,7 +324,11 @@ func TestTransformUnstructuredError(t *testing.T) {
 			resourceName: testCase.Name,
 			resource:     testCase.Resource,
 		}
-		_, _, err := r.transformResponse(testCase.Res, testCase.Req)
+		body, err := ioutil.ReadAll(testCase.Res.Body)
+		if err != nil {
+			t.Errorf("failed to read body: %v", err)
+		}
+		_, _, err = r.transformResponse(body, testCase.Res, testCase.Req)
 		if !testCase.ErrFn(err) {
 			t.Errorf("unexpected error: %v", err)
 			continue

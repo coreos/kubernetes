@@ -19,7 +19,7 @@ You need an [etcd](https://github.com/coreos/etcd/releases) in your path, please
 
 #### go
 
-You need [go](https://golang.org/doc/install) in your path, please make sure it is installed and in your ``$PATH``.
+You need [go](https://golang.org/doc/install) at least 1.3+ in your path, please make sure it is installed and in your ``$PATH``.
 
 ### Starting the cluster
 
@@ -74,7 +74,7 @@ However you can't view the nginx start page on localhost. To verify that nginx i
 You can control the specifications of a pod via a user defined manifest, and reach nginx through your browser on the port specified therein:
 
 ```
-cluster/kubectl.sh create -f api/examples/pod.json
+cluster/kubectl.sh create -f docs/getting-started-guides/pod.json
 ```
 
 Congratulations!

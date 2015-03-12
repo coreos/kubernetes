@@ -20,17 +20,17 @@ import (
 	"fmt"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/errors"
 	etcderr "github.com/GoogleCloudPlatform/kubernetes/pkg/api/errors/etcd"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/rest"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/constraint"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/registry/generic"
 	etcdgeneric "github.com/GoogleCloudPlatform/kubernetes/pkg/registry/generic/etcd"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/registry/pod"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/tools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/watch"
-
-	"github.com/golang/glog"
 )
 
 // rest implements a RESTStorage for pods against etcd
@@ -39,9 +39,8 @@ type REST struct {
 }
 
 // NewREST returns a RESTStorage object that will work against pods.
-func NewREST(h tools.EtcdHelper, factory pod.BoundPodFactory) (*REST, *BindingREST) {
+func NewREST(h tools.EtcdHelper, factory pod.BoundPodFactory) (*REST, *BindingREST, *StatusREST) {
 	prefix := "/registry/pods"
-	bindings := &podLifecycle{h}
 	store := &etcdgeneric.Etcd{
 		NewFunc:     func() runtime.Object { return &api.Pod{} },
 		NewListFunc: func() runtime.Object { return &api.PodList{} },
@@ -54,19 +53,25 @@ func NewREST(h tools.EtcdHelper, factory pod.BoundPodFactory) (*REST, *BindingRE
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
 			return obj.(*api.Pod).Name, nil
 		},
+		PredicateFunc: func(label labels.Selector, field fields.Selector) generic.Matcher {
+			return pod.MatchPod(label, field)
+		},
 		EndpointName: "pods",
-
-		CreateStrategy: pod.Strategy,
-
-		UpdateStrategy: pod.Strategy,
-		AfterUpdate:    bindings.AfterUpdate,
-
-		ReturnDeletedObject: true,
-		AfterDelete:         bindings.AfterDelete,
 
 		Helper: h,
 	}
-	return &REST{store: store}, &BindingREST{store: store, factory: factory}
+	statusStore := *store
+
+	bindings := &podLifecycle{}
+	store.CreateStrategy = pod.Strategy
+	store.UpdateStrategy = pod.Strategy
+	store.AfterUpdate = bindings.AfterUpdate
+	store.ReturnDeletedObject = true
+	store.AfterDelete = bindings.AfterDelete
+
+	statusStore.UpdateStrategy = pod.StatusStrategy
+
+	return &REST{store: store}, &BindingREST{store: store, factory: factory}, &StatusREST{store: &statusStore}
 }
 
 // WithPodStatus returns a rest object that decorates returned responses with extra
@@ -89,13 +94,13 @@ func (r *REST) NewList() runtime.Object {
 }
 
 // List obtains a list of pods with labels that match selector.
-func (r *REST) List(ctx api.Context, label, field labels.Selector) (runtime.Object, error) {
-	return r.store.List(ctx, pod.MatchPod(label, field))
+func (r *REST) List(ctx api.Context, label labels.Selector, field fields.Selector) (runtime.Object, error) {
+	return r.store.List(ctx, label, field)
 }
 
 // Watch begins watching for new, changed, or deleted pods.
-func (r *REST) Watch(ctx api.Context, label, field labels.Selector, resourceVersion string) (watch.Interface, error) {
-	return r.store.Watch(ctx, pod.MatchPod(label, field), resourceVersion)
+func (r *REST) Watch(ctx api.Context, label labels.Selector, field fields.Selector, resourceVersion string) (watch.Interface, error) {
+	return r.store.Watch(ctx, label, field, resourceVersion)
 }
 
 // Get gets a specific pod specified by its ID.
@@ -123,10 +128,6 @@ func (r *REST) ResourceLocation(ctx api.Context, name string) (string, error) {
 	return pod.ResourceLocation(r, ctx, name)
 }
 
-func makeBoundPodsKey(machine string) string {
-	return "/registry/nodes/" + machine + "/boundpods"
-}
-
 // BindingREST implements the REST endpoint for binding pods to nodes when etcd is in use.
 type BindingREST struct {
 	store   *etcdgeneric.Etcd
@@ -140,7 +141,14 @@ func (r *BindingREST) New() runtime.Object {
 // Create ensures a pod is bound to a specific host.
 func (r *BindingREST) Create(ctx api.Context, obj runtime.Object) (out runtime.Object, err error) {
 	binding := obj.(*api.Binding)
-	err = r.assignPod(ctx, binding.PodID, binding.Host)
+	// TODO: move me to a binding strategy
+	if len(binding.Target.Kind) != 0 && (binding.Target.Kind != "Node" && binding.Target.Kind != "Minion") {
+		return nil, errors.NewInvalid("binding", binding.Name, errors.ValidationErrorList{errors.NewFieldInvalid("to.kind", binding.Target.Kind, "must be empty, 'Node', or 'Minion'")})
+	}
+	if len(binding.Target.Name) == 0 {
+		return nil, errors.NewInvalid("binding", binding.Name, errors.ValidationErrorList{errors.NewFieldRequired("to.name", binding.Target.Name)})
+	}
+	err = r.assignPod(ctx, binding.Name, binding.Target.Name)
 	err = etcderr.InterpretCreateError(err, "binding", "")
 	out = &api.Status{Status: api.StatusSuccess}
 	return
@@ -158,9 +166,10 @@ func (r *BindingREST) setPodHostTo(ctx api.Context, podID, oldMachine, machine s
 		if !ok {
 			return nil, fmt.Errorf("unexpected object: %#v", obj)
 		}
-		if pod.Status.Host != oldMachine {
-			return nil, fmt.Errorf("pod %v is already assigned to host %v", pod.Name, pod.Status.Host)
+		if pod.Spec.Host != oldMachine || pod.Status.Host != oldMachine {
+			return nil, fmt.Errorf("pod %v is already assigned to host %v or %v", pod.Name, pod.Spec.Host, pod.Status.Host)
 		}
+		pod.Spec.Host = machine
 		pod.Status.Host = machine
 		finalPod = pod
 		return pod, nil
@@ -170,83 +179,33 @@ func (r *BindingREST) setPodHostTo(ctx api.Context, podID, oldMachine, machine s
 
 // assignPod assigns the given pod to the given machine.
 func (r *BindingREST) assignPod(ctx api.Context, podID string, machine string) error {
-	finalPod, err := r.setPodHostTo(ctx, podID, "", machine)
+	_, err := r.setPodHostTo(ctx, podID, "", machine)
 	if err != nil {
 		return err
-	}
-	boundPod, err := r.factory.MakeBoundPod(machine, finalPod)
-	if err != nil {
-		return err
-	}
-	// Doing the constraint check this way provides atomicity guarantees.
-	contKey := makeBoundPodsKey(machine)
-	err = r.store.Helper.AtomicUpdate(contKey, &api.BoundPods{}, true, func(in runtime.Object) (runtime.Object, error) {
-		boundPodList := in.(*api.BoundPods)
-		boundPodList.Items = append(boundPodList.Items, *boundPod)
-		if errors := constraint.Allowed(boundPodList.Items); len(errors) > 0 {
-			return nil, fmt.Errorf("the assignment would cause the following constraints violation: %v", errors)
-		}
-		return boundPodList, nil
-	})
-	if err != nil {
-		// Put the pod's host back the way it was. This is a terrible hack, but
-		// can't really be helped, since there's not really a way to do atomic
-		// multi-object changes in etcd.
-		if _, err2 := r.setPodHostTo(ctx, podID, machine, ""); err2 != nil {
-			glog.Errorf("Stranding pod %v; couldn't clear host after previous error: %v", podID, err2)
-		}
 	}
 	return err
 }
 
-type podLifecycle struct {
-	tools.EtcdHelper
-}
+type podLifecycle struct{}
 
 func (h *podLifecycle) AfterUpdate(obj runtime.Object) error {
-	pod := obj.(*api.Pod)
-	if len(pod.Status.Host) == 0 {
-		return nil
-	}
-	containerKey := makeBoundPodsKey(pod.Status.Host)
-	return h.AtomicUpdate(containerKey, &api.BoundPods{}, true, func(in runtime.Object) (runtime.Object, error) {
-		boundPods := in.(*api.BoundPods)
-		for ix := range boundPods.Items {
-			if boundPods.Items[ix].Name == pod.Name && boundPods.Items[ix].Namespace == pod.Namespace {
-				boundPods.Items[ix].Spec = pod.Spec
-				return boundPods, nil
-			}
-		}
-		// This really shouldn't happen
-		glog.Warningf("Couldn't find: %s in %#v", pod.Name, boundPods)
-		return boundPods, fmt.Errorf("failed to update pod, couldn't find %s in %#v", pod.Name, boundPods)
-	})
+	return nil
 }
 
 func (h *podLifecycle) AfterDelete(obj runtime.Object) error {
-	pod := obj.(*api.Pod)
-	if len(pod.Status.Host) == 0 {
-		return nil
-	}
-	containerKey := makeBoundPodsKey(pod.Status.Host)
-	return h.AtomicUpdate(containerKey, &api.BoundPods{}, true, func(in runtime.Object) (runtime.Object, error) {
-		pods := in.(*api.BoundPods)
-		newPods := make([]api.BoundPod, 0, len(pods.Items))
-		found := false
-		for _, boundPod := range pods.Items {
-			if boundPod.Name != pod.Name || boundPod.Namespace != pod.Namespace {
-				newPods = append(newPods, boundPod)
-			} else {
-				found = true
-			}
-		}
-		if !found {
-			// This really shouldn't happen, it indicates something is broken, and likely
-			// there is a lost pod somewhere.
-			// However it is "deleted" so log it and move on
-			glog.Warningf("Couldn't find: %s in %#v", pod.Name, pods)
-		}
-		pods.Items = newPods
-		return pods, nil
-	})
+	return nil
+}
+
+// StatusREST implements the REST endpoint for changing the status of a pod.
+type StatusREST struct {
+	store *etcdgeneric.Etcd
+}
+
+func (r *StatusREST) New() runtime.Object {
+	return &api.Pod{}
+}
+
+// Update alters the status subset of an object.
+func (r *StatusREST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool, error) {
+	return r.store.Update(ctx, obj)
 }

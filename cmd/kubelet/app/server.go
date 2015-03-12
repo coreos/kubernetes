@@ -21,22 +21,25 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/client"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/client/record"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/clientauth"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/credentialprovider"
 	_ "github.com/GoogleCloudPlatform/kubernetes/pkg/healthz"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/cadvisor"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/config"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/dockertools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/kubelet/volume"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/master/ports"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/tools"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 
 	"github.com/golang/glog"
+	cadvisorClient "github.com/google/cadvisor/client"
 	"github.com/spf13/pflag"
 )
 
@@ -56,8 +59,6 @@ type KubeletServer struct {
 	HostnameOverride               string
 	PodInfraContainerImage         string
 	DockerEndpoint                 string
-	EtcdServerList                 util.StringList
-	EtcdConfigFile                 string
 	RootDirectory                  string
 	AllowPrivileged                bool
 	RegistryPullQPS                float64
@@ -75,6 +76,7 @@ type KubeletServer struct {
 	ClusterDNS                     util.IP
 	ReallyCrashForTesting          bool
 	StreamingConnectionIdleTimeout time.Duration
+	ContainerRuntimeChoice         string
 }
 
 // NewKubeletServer will create a new KubeletServer with default values.
@@ -111,13 +113,11 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.HostnameOverride, "hostname_override", s.HostnameOverride, "If non-empty, will use this string as identification instead of the actual hostname.")
 	fs.StringVar(&s.PodInfraContainerImage, "pod_infra_container_image", s.PodInfraContainerImage, "The image whose network/ipc namespaces containers in each pod will use.")
 	fs.StringVar(&s.DockerEndpoint, "docker_endpoint", s.DockerEndpoint, "If non-empty, use this for the docker endpoint to communicate with")
-	fs.Var(&s.EtcdServerList, "etcd_servers", "List of etcd servers to watch (http://ip:port), comma separated. Mutually exclusive with -etcd_config")
-	fs.StringVar(&s.EtcdConfigFile, "etcd_config", s.EtcdConfigFile, "The config file for the etcd client. Mutually exclusive with -etcd_servers")
 	fs.StringVar(&s.RootDirectory, "root_dir", s.RootDirectory, "Directory path for managing kubelet files (volume mounts,etc).")
 	fs.BoolVar(&s.AllowPrivileged, "allow_privileged", s.AllowPrivileged, "If true, allow containers to request privileged mode. [default=false]")
 	fs.Float64Var(&s.RegistryPullQPS, "registry_qps", s.RegistryPullQPS, "If > 0, limit registry pull QPS to this value.  If 0, unlimited. [default=0.0]")
 	fs.IntVar(&s.RegistryBurst, "registry_burst", s.RegistryBurst, "Maximum size of a bursty pulls, temporarily allows pulls to burst to this number, while still not exceeding registry_qps.  Only used if --registry_qps > 0")
-	fs.BoolVar(&s.RunOnce, "runonce", s.RunOnce, "If true, exit after spawning pods from local manifests or remote urls. Exclusive with --etcd_servers, --api_servers, and --enable-server")
+	fs.BoolVar(&s.RunOnce, "runonce", s.RunOnce, "If true, exit after spawning pods from local manifests or remote urls. Exclusive with --api_servers, and --enable-server")
 	fs.BoolVar(&s.EnableDebuggingHandlers, "enable_debugging_handlers", s.EnableDebuggingHandlers, "Enables server endpoints for log collection and local running of containers and commands")
 	fs.DurationVar(&s.MinimumGCAge, "minimum_container_ttl_duration", s.MinimumGCAge, "Minimum age for a finished container before it is garbage collected.  Examples: '300ms', '10s' or '2h45m'")
 	fs.IntVar(&s.MaxContainerCount, "maximum_dead_containers_per_container", s.MaxContainerCount, "Maximum number of old instances of a container to retain per container.  Each container takes up some disk space.  Default: 5.")
@@ -130,26 +130,13 @@ func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
 	fs.Var(&s.ClusterDNS, "cluster_dns", "IP address for a cluster DNS server.  If set, kubelet will configure all containers to use this for DNS resolution in addition to the host's DNS servers")
 	fs.BoolVar(&s.ReallyCrashForTesting, "really_crash_for_testing", s.ReallyCrashForTesting, "If true, crash with panics more often.")
 	fs.DurationVar(&s.StreamingConnectionIdleTimeout, "streaming_connection_idle_timeout", 0, "Maximum time a streaming connection can be idle before the connection is automatically closed.  Example: '5m'")
+	fs.StringVar(&s.ContainerRuntimeChoice, "container_runtime_choice", "docker", "The choice fo the container runtime. Example: 'docker', 'rocket'.")
 }
 
 // Run runs the specified KubeletServer.  This should never exit.
 func (s *KubeletServer) Run(_ []string) error {
 	util.ReallyCrash = s.ReallyCrashForTesting
 	rand.Seed(time.Now().UTC().UnixNano())
-
-	// Cluster creation scripts support both kubernetes versions that 1)
-	// support kublet watching apiserver for pods, and 2) ones that don't. So
-	// they can set both --etcd_servers and --api_servers.  The current code
-	// will ignore the --etcd_servers flag, while older kubelet code will use
-	// the --etcd_servers flag for pods, and use --api_servers for event
-	// publising.
-	//
-	// TODO(erictune): convert all cloud provider scripts and Google Container Engine to
-	// use only --api_servers, then delete --etcd_servers flag and the resulting dead code.
-	if len(s.EtcdServerList) > 0 && len(s.APIServerList) > 0 {
-		glog.Infof("Both --etcd_servers and --api_servers are set.  Not using etcd source.")
-		s.EtcdServerList = util.StringList{}
-	}
 
 	if err := util.ApplyOomScoreAdj(0, s.OOMScoreAdj); err != nil {
 		glog.Info(err)
@@ -188,10 +175,10 @@ func (s *KubeletServer) Run(_ []string) error {
 		EnableDebuggingHandlers:        s.EnableDebuggingHandlers,
 		DockerClient:                   dockertools.ConnectToDockerOrDie(s.DockerEndpoint),
 		KubeClient:                     client,
-		EtcdClient:                     kubelet.EtcdClientOrDie(s.EtcdServerList, s.EtcdConfigFile),
 		MasterServiceNamespace:         s.MasterServiceNamespace,
 		VolumePlugins:                  ProbeVolumePlugins(),
 		StreamingConnectionIdleTimeout: s.StreamingConnectionIdleTimeout,
+		ContainerRuntimeChoice:         s.ContainerRuntimeChoice,
 	}
 
 	RunKubelet(&kcfg)
@@ -203,10 +190,8 @@ func (s *KubeletServer) Run(_ []string) error {
 
 func (s *KubeletServer) setupRunOnce() {
 	if s.RunOnce {
-		// Don't use remote (etcd or apiserver) sources
-		if len(s.EtcdServerList) > 0 {
-			glog.Fatalf("invalid option: --runonce and --etcd_servers are mutually exclusive")
-		}
+		// Don't use apiserver source, on the presumption that this flag is used
+		// for bootstrapping some system pods.
 		if len(s.APIServerList) > 0 {
 			glog.Fatalf("invalid option: --runonce and --api_servers are mutually exclusive")
 		}
@@ -246,18 +231,17 @@ func (s *KubeletServer) createAPIServerClient() (*client.Client, error) {
 	return c, nil
 }
 
-// SimpleRunKubelet is a simple way to start a Kubelet talking to dockerEndpoint, using an etcdClient.
+// SimpleRunKubelet is a simple way to start a Kubelet talking to dockerEndpoint, using an API Client.
 // Under the hood it calls RunKubelet (below)
 func SimpleRunKubelet(client *client.Client,
-	etcdClient tools.EtcdClient,
 	dockerClient dockertools.DockerInterface,
 	hostname, rootDir, manifestURL, address string,
 	port uint,
 	masterServiceNamespace string,
-	volumePlugins []volume.Plugin) {
+	volumePlugins []volume.Plugin,
+	tlsOptions *kubelet.TLSOptions) {
 	kcfg := KubeletConfig{
 		KubeClient:             client,
-		EtcdClient:             etcdClient,
 		DockerClient:           dockerClient,
 		HostnameOverride:       hostname,
 		RootDirectory:          rootDir,
@@ -272,6 +256,7 @@ func SimpleRunKubelet(client *client.Client,
 		MaxContainerCount:       5,
 		MasterServiceNamespace:  masterServiceNamespace,
 		VolumePlugins:           volumePlugins,
+		TLSOptions:              tlsOptions,
 	}
 	RunKubelet(&kcfg)
 }
@@ -283,6 +268,7 @@ func SimpleRunKubelet(client *client.Client,
 // Eventually, #2 will be replaced with instances of #3
 func RunKubelet(kcfg *KubeletConfig) {
 	kcfg.Hostname = util.GetHostname(kcfg.HostnameOverride)
+	kcfg.Recorder = record.FromSource(api.EventSource{Component: "kubelet", Host: kcfg.Hostname})
 	if kcfg.KubeClient != nil {
 		kubelet.SetupEventSending(kcfg.KubeClient, kcfg.Hostname)
 	} else {
@@ -316,14 +302,14 @@ func startKubelet(k *kubelet.Kubelet, podCfg *config.PodConfig, kc *KubeletConfi
 	// start the kubelet server
 	if kc.EnableServer {
 		go util.Forever(func() {
-			kubelet.ListenAndServeKubeletServer(k, net.IP(kc.Address), kc.Port, kc.EnableDebuggingHandlers)
+			kubelet.ListenAndServeKubeletServer(k, net.IP(kc.Address), kc.Port, kc.TLSOptions, kc.EnableDebuggingHandlers)
 		}, 0)
 	}
 }
 
 func makePodSourceConfig(kc *KubeletConfig) *config.PodConfig {
 	// source of all configuration
-	cfg := config.NewPodConfig(config.PodConfigNotificationSnapshotAndUpdates)
+	cfg := config.NewPodConfig(config.PodConfigNotificationSnapshotAndUpdates, kc.Recorder)
 
 	// define file config source
 	if kc.ConfigFile != "" {
@@ -336,10 +322,6 @@ func makePodSourceConfig(kc *KubeletConfig) *config.PodConfig {
 		glog.Infof("Adding manifest url: %v", kc.ManifestURL)
 		config.NewSourceURL(kc.ManifestURL, kc.HTTPCheckFrequency, cfg.Channel(kubelet.HTTPSource))
 	}
-	if kc.EtcdClient != nil {
-		glog.Infof("Watching for etcd configs at %v", kc.EtcdClient.GetCluster())
-		config.NewSourceEtcd(config.EtcdKeyForHost(kc.Hostname), kc.EtcdClient, cfg.Channel(kubelet.EtcdSource))
-	}
 	if kc.KubeClient != nil {
 		glog.Infof("Watching apiserver")
 		config.NewSourceApiserver(kc.KubeClient, kc.Hostname, cfg.Channel(kubelet.ApiserverSource))
@@ -350,7 +332,6 @@ func makePodSourceConfig(kc *KubeletConfig) *config.PodConfig {
 // KubeletConfig is all of the parameters necessary for running a kubelet.
 // TODO: This should probably be merged with KubeletServer.  The extra object is a consequence of refactoring.
 type KubeletConfig struct {
-	EtcdClient                     tools.EtcdClient
 	KubeClient                     *client.Client
 	DockerClient                   dockertools.DockerInterface
 	CAdvisorPort                   uint
@@ -363,6 +344,7 @@ type KubeletConfig struct {
 	FileCheckFrequency             time.Duration
 	HTTPCheckFrequency             time.Duration
 	Hostname                       string
+	ContainerRuntimeChoice         string
 	PodInfraContainerImage         string
 	SyncFrequency                  time.Duration
 	RegistryPullQPS                float64
@@ -378,17 +360,37 @@ type KubeletConfig struct {
 	MasterServiceNamespace         string
 	VolumePlugins                  []volume.Plugin
 	StreamingConnectionIdleTimeout time.Duration
+	Recorder                       record.EventRecorder
+	TLSOptions                     *kubelet.TLSOptions
 }
 
 func createAndInitKubelet(kc *KubeletConfig, pc *config.PodConfig) (*kubelet.Kubelet, error) {
 	// TODO: block until all sources have delivered at least one update to the channel, or break the sync loop
 	// up into "per source" synchronizations
+	// TODO: KubeletConfig.KubeClient should be a client interface, but client interface misses certain methods
+	// used by kubelet. Since NewMainKubelet expects a client interface, we need to make sure we are not passing
+	// a nil pointer to it when what we really want is a nil interface.
+	var kubeClient client.Interface
+	if kc.KubeClient == nil {
+		kubeClient = nil
+	} else {
+		kubeClient = kc.KubeClient
+	}
+
+	cc, err := cadvisorClient.NewClient("http://127.0.0.1:" + strconv.Itoa(int(kc.CAdvisorPort)))
+	if err != nil {
+		return nil, err
+	}
+	cadvisorInterface, err := cadvisor.New(cc)
+	if err != nil {
+		return nil, err
+	}
 
 	k, err := kubelet.NewMainKubelet(
 		kc.Hostname,
+		kc.ContainerRuntimeChoice,
 		kc.DockerClient,
-		kc.EtcdClient,
-		kc.KubeClient,
+		kubeClient,
 		kc.RootDirectory,
 		kc.PodInfraContainerImage,
 		kc.SyncFrequency,
@@ -396,12 +398,14 @@ func createAndInitKubelet(kc *KubeletConfig, pc *config.PodConfig) (*kubelet.Kub
 		kc.RegistryBurst,
 		kc.MinimumGCAge,
 		kc.MaxContainerCount,
-		pc.IsSourceSeen,
+		pc.SeenAllSources,
 		kc.ClusterDomain,
 		net.IP(kc.ClusterDNS),
 		kc.MasterServiceNamespace,
 		kc.VolumePlugins,
-		kc.StreamingConnectionIdleTimeout)
+		kc.StreamingConnectionIdleTimeout,
+		kc.Recorder,
+		cadvisorInterface)
 
 	if err != nil {
 		return nil, err
@@ -410,7 +414,6 @@ func createAndInitKubelet(kc *KubeletConfig, pc *config.PodConfig) (*kubelet.Kub
 	k.BirthCry()
 
 	go k.GarbageCollectLoop()
-	go kubelet.MonitorCAdvisor(k, kc.CAdvisorPort)
 
 	return k, nil
 }

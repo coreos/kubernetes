@@ -55,13 +55,18 @@ func (kl *Kubelet) runOnce(pods []api.BoundPod) (results []RunPodResult, err err
 	if kl.dockerPuller == nil {
 		kl.dockerPuller = dockertools.NewDockerPuller(kl.dockerClient, kl.pullQPS, kl.pullBurst)
 	}
-	pods = filterHostPortConflicts(pods)
+	kl.handleHostPortConflicts(pods)
 
 	ch := make(chan RunPodResult)
 	for i := range pods {
 		pod := pods[i] // Make a copy
 		go func() {
-			err := kl.runPod(pod)
+			var err error
+			if kl.containerRuntimeChoice == "rocket" {
+				err = kl.runRocketPod(pod)
+			} else {
+				err = kl.runPod(pod)
+			}
 			ch <- RunPodResult{&pod, err}
 		}()
 	}
@@ -137,4 +142,46 @@ func (kl *Kubelet) isPodRunning(pod api.BoundPod, dockerContainers dockertools.D
 		}
 	}
 	return true, nil
+}
+
+// runRocketPod runs a single pod and wait until all containers are running.
+func (kl *Kubelet) runRocketPod(pod api.BoundPod) error {
+	delay := RunOnceRetryDelay
+	retry := 0
+	for {
+		runningPods, err := kl.containerRuntime.ListPods()
+		if err != nil {
+			return fmt.Errorf("failed to get kubelet docker containers: %v", err)
+		}
+		runningPod := findPodByID(pod.UID, runningPods)
+		if runningPod != nil {
+			if allContainersRunning(runningPod) {
+				glog.Infof("pod %q containers running", pod.Name)
+				return nil
+			}
+		}
+		glog.Infof("pod %q containers not running: syncing", pod.Name)
+		if err = kl.syncRocketPod(&pod, runningPod); err != nil {
+			return fmt.Errorf("error syncing pod: %v", err)
+		}
+		if retry >= RunOnceMaxRetries {
+			return fmt.Errorf("timeout error: pod %q containers not running after %d retries", pod.Name, RunOnceMaxRetries)
+		}
+		// TODO(proppy): health checking would be better than waiting + checking the state at the next iteration.
+		glog.Infof("pod %q containers synced, waiting for %v", pod.Name, delay)
+		<-time.After(delay)
+		retry++
+		delay *= RunOnceRetryDelayBackoff
+	}
+}
+
+// allContainersRunning returns true if all containers of a pod are running.
+func allContainersRunning(pod *api.Pod) bool {
+	for containerName, containerStatus := range pod.Status.Info {
+		if containerStatus.State.Running == nil {
+			glog.Infof("container %q not running", containerName)
+			return false
+		}
+	}
+	return true
 }

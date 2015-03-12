@@ -19,6 +19,7 @@ package config
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,9 @@ func TestExtractInvalidManifest(t *testing.T) {
 }
 
 func TestExtractFromHTTP(t *testing.T) {
+	hostname, _ := os.Hostname()
+	hostname = strings.ToLower(hostname)
+
 	var testCases = []struct {
 		desc      string
 		manifests interface{}
@@ -131,8 +135,9 @@ func TestExtractFromHTTP(t *testing.T) {
 				api.BoundPod{
 					ObjectMeta: api.ObjectMeta{
 						UID:       "111",
-						Name:      "foo",
+						Name:      "foo" + "-" + hostname,
 						Namespace: "foobar",
+						SelfLink:  "/api/v1beta1/boundPods/foo",
 					},
 					Spec: api.PodSpec{
 						RestartPolicy: api.RestartPolicy{Always: &api.RestartPolicyAlways{}},
@@ -153,7 +158,7 @@ func TestExtractFromHTTP(t *testing.T) {
 				api.BoundPod{
 					ObjectMeta: api.ObjectMeta{
 						UID:       "111",
-						Name:      "111",
+						Name:      "111" + "-" + hostname,
 						Namespace: "foobar",
 					},
 					Spec: api.PodSpec{
@@ -171,8 +176,9 @@ func TestExtractFromHTTP(t *testing.T) {
 				api.BoundPod{
 					ObjectMeta: api.ObjectMeta{
 						UID:       "111",
-						Name:      "foo",
+						Name:      "foo" + "-" + hostname,
 						Namespace: "foobar",
+						SelfLink:  "/api/v1beta1/boundPods/foo",
 					},
 					Spec: api.PodSpec{
 						RestartPolicy: api.RestartPolicy{Always: &api.RestartPolicyAlways{}},
@@ -198,8 +204,9 @@ func TestExtractFromHTTP(t *testing.T) {
 				api.BoundPod{
 					ObjectMeta: api.ObjectMeta{
 						UID:       "111",
-						Name:      "foo",
+						Name:      "foo" + "-" + hostname,
 						Namespace: "foobar",
+						SelfLink:  "/api/v1beta1/boundPods/foo",
 					},
 					Spec: api.PodSpec{
 						RestartPolicy: api.RestartPolicy{Always: &api.RestartPolicyAlways{}},
@@ -214,8 +221,9 @@ func TestExtractFromHTTP(t *testing.T) {
 				api.BoundPod{
 					ObjectMeta: api.ObjectMeta{
 						UID:       "222",
-						Name:      "bar",
+						Name:      "bar" + "-" + hostname,
 						Namespace: "foobar",
+						SelfLink:  "/api/v1beta1/boundPods/bar",
 					},
 					Spec: api.PodSpec{
 						RestartPolicy: api.RestartPolicy{Always: &api.RestartPolicyAlways{}},
@@ -234,6 +242,7 @@ func TestExtractFromHTTP(t *testing.T) {
 			expected:  CreatePodUpdate(kubelet.SET, kubelet.HTTPSource),
 		},
 	}
+
 	for _, testCase := range testCases {
 		data, err := json.Marshal(testCase.manifests)
 		if err != nil {
@@ -256,8 +265,8 @@ func TestExtractFromHTTP(t *testing.T) {
 		for i := range update.Pods {
 			// There's no way to provide namespace in ContainerManifest, so
 			// it will be defaulted.
-			if !strings.HasPrefix(update.Pods[i].ObjectMeta.Namespace, "url-") {
-				t.Errorf("Unexpected namespace: %s", update.Pods[0].ObjectMeta.Namespace)
+			if update.Pods[i].Namespace != kubelet.NamespaceDefault {
+				t.Errorf("Unexpected namespace: %s", update.Pods[0].Namespace)
 			}
 			update.Pods[i].ObjectMeta.Namespace = "foobar"
 		}

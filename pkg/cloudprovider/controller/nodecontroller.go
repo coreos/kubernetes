@@ -46,9 +46,10 @@ type NodeController struct {
 	staticResources    *api.NodeResources
 	nodes              []string
 	kubeClient         client.Interface
-	kubeletClient      client.KubeletHealthChecker
+	kubeletClient      client.KubeletClient
 	registerRetryCount int
 	podEvictionTimeout time.Duration
+	lookupIP           func(host string) ([]net.IP, error)
 }
 
 // NewNodeController returns a new node controller to sync instances from cloudprovider.
@@ -60,7 +61,7 @@ func NewNodeController(
 	nodes []string,
 	staticResources *api.NodeResources,
 	kubeClient client.Interface,
-	kubeletClient client.KubeletHealthChecker,
+	kubeletClient client.KubeletClient,
 	registerRetryCount int,
 	podEvictionTimeout time.Duration) *NodeController {
 	return &NodeController{
@@ -72,18 +73,26 @@ func NewNodeController(
 		kubeletClient:      kubeletClient,
 		registerRetryCount: registerRetryCount,
 		podEvictionTimeout: podEvictionTimeout,
+		lookupIP:           net.LookupIP,
 	}
 }
 
 // Run creates initial node list and start syncing instances from cloudprovider if any.
 // It also starts syncing cluster node status.
-func (s *NodeController) Run(period time.Duration, syncNodeList bool) {
+// 1. RegisterNodes() is called only once to register all initial nodes (from cloudprovider
+//    or from command line flag). To make cluster bootstrap faster, node controller populates
+//    node addresses.
+// 2. SyncCloud() is called periodically (if enabled) to sync instances from cloudprovider.
+//    Node created here will only have specs.
+// 3. SyncNodeStatus() is called periodically (if enabled) to sync node status for nodes in
+//    k8s cluster.
+func (s *NodeController) Run(period time.Duration, syncNodeList, syncNodeStatus bool) {
 	// Register intial set of nodes with their status set.
 	var nodes *api.NodeList
 	var err error
 	if s.isRunningCloudProvider() {
 		if syncNodeList {
-			nodes, err = s.CloudNodes()
+			nodes, err = s.GetCloudNodesWithSpec()
 			if err != nil {
 				glog.Errorf("Error loading initial node from cloudprovider: %v", err)
 			}
@@ -91,13 +100,12 @@ func (s *NodeController) Run(period time.Duration, syncNodeList bool) {
 			nodes = &api.NodeList{}
 		}
 	} else {
-		nodes, err = s.StaticNodes()
+		nodes, err = s.GetStaticNodesWithSpec()
 		if err != nil {
 			glog.Errorf("Error loading initial static nodes: %v", err)
 		}
 	}
-	nodes = s.DoChecks(nodes)
-	nodes, err = s.PopulateIPs(nodes)
+	nodes, err = s.PopulateAddresses(nodes)
 	if err != nil {
 		glog.Errorf("Error getting nodes ips: %v", err)
 	}
@@ -114,12 +122,21 @@ func (s *NodeController) Run(period time.Duration, syncNodeList bool) {
 		}, period)
 	}
 
-	// Start syncing node status.
-	go util.Forever(func() {
-		if err = s.SyncNodeStatus(); err != nil {
-			glog.Errorf("Error syncing status: %v", err)
-		}
-	}, period)
+	if syncNodeStatus {
+		// Start syncing node status.
+		go util.Forever(func() {
+			if err = s.SyncNodeStatus(); err != nil {
+				glog.Errorf("Error syncing status: %v", err)
+			}
+		}, period)
+	} else {
+		// Start checking node reachability and evicting timeouted pods.
+		go util.Forever(func() {
+			if err = s.EvictTimeoutedPods(); err != nil {
+				glog.Errorf("Error evicting timeouted pods: %v", err)
+			}
+		}, period)
+	}
 }
 
 // RegisterNodes registers the given list of nodes, it keeps retrying for `retryCount` times.
@@ -154,7 +171,7 @@ func (s *NodeController) RegisterNodes(nodes *api.NodeList, retryCount int, retr
 
 // SyncCloud synchronizes the list of instances from cloudprovider to master server.
 func (s *NodeController) SyncCloud() error {
-	matches, err := s.CloudNodes()
+	matches, err := s.GetCloudNodesWithSpec()
 	if err != nil {
 		return err
 	}
@@ -163,7 +180,8 @@ func (s *NodeController) SyncCloud() error {
 		return err
 	}
 	nodeMap := make(map[string]*api.Node)
-	for _, node := range nodes.Items {
+	for i := range nodes.Items {
+		node := nodes.Items[i]
 		nodeMap[node.Name] = &node
 	}
 
@@ -198,8 +216,8 @@ func (s *NodeController) SyncNodeStatus() error {
 	if err != nil {
 		return err
 	}
-	nodes = s.DoChecks(nodes)
-	nodes, err = s.PopulateIPs(nodes)
+	nodes = s.UpdateNodesStatus(nodes)
+	nodes, err = s.PopulateAddresses(nodes)
 	if err != nil {
 		return err
 	}
@@ -216,8 +234,35 @@ func (s *NodeController) SyncNodeStatus() error {
 	return nil
 }
 
-// PopulateIPs queries IPs for given list of nodes.
-func (s *NodeController) PopulateIPs(nodes *api.NodeList) (*api.NodeList, error) {
+// EvictTimeoutedPods verifies if nodes are reachable by checking the time of last probe
+// and deletes pods from not reachable nodes.
+func (s *NodeController) EvictTimeoutedPods() error {
+	nodes, err := s.kubeClient.Nodes().List()
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes.Items {
+		if util.Now().After(latestReadyTime(&node).Add(s.podEvictionTimeout)) {
+			s.deletePods(node.Name)
+		}
+	}
+	return nil
+}
+
+func latestReadyTime(node *api.Node) util.Time {
+	readyTime := node.ObjectMeta.CreationTimestamp
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == api.NodeReady &&
+			condition.Status == api.ConditionFull &&
+			condition.LastProbeTime.After(readyTime.Time) {
+			readyTime = condition.LastProbeTime
+		}
+	}
+	return readyTime
+}
+
+// PopulateAddresses queries Address for given list of nodes.
+func (s *NodeController) PopulateAddresses(nodes *api.NodeList) (*api.NodeList, error) {
 	if s.isRunningCloudProvider() {
 		instances, ok := s.cloud.Instances()
 		if !ok {
@@ -229,7 +274,8 @@ func (s *NodeController) PopulateIPs(nodes *api.NodeList) (*api.NodeList, error)
 			if err != nil {
 				glog.Errorf("error getting instance ip address for %s: %v", node.Name, err)
 			} else {
-				node.Status.HostIP = hostIP.String()
+				address := api.NodeAddress{Type: api.NodeLegacyHostIP, Address: hostIP.String()}
+				api.AddToNodeAddresses(&node.Status.Addresses, address)
 			}
 		}
 	} else {
@@ -237,15 +283,17 @@ func (s *NodeController) PopulateIPs(nodes *api.NodeList) (*api.NodeList, error)
 			node := &nodes.Items[i]
 			addr := net.ParseIP(node.Name)
 			if addr != nil {
-				node.Status.HostIP = node.Name
+				address := api.NodeAddress{Type: api.NodeLegacyHostIP, Address: addr.String()}
+				api.AddToNodeAddresses(&node.Status.Addresses, address)
 			} else {
-				addrs, err := net.LookupIP(node.Name)
+				addrs, err := s.lookupIP(node.Name)
 				if err != nil {
 					glog.Errorf("Can't get ip address of node %s: %v", node.Name, err)
 				} else if len(addrs) == 0 {
 					glog.Errorf("No ip address for node %v", node.Name)
 				} else {
-					node.Status.HostIP = addrs[0].String()
+					address := api.NodeAddress{Type: api.NodeLegacyHostIP, Address: addrs[0].String()}
+					api.AddToNodeAddresses(&node.Status.Addresses, address)
 				}
 			}
 		}
@@ -253,18 +301,33 @@ func (s *NodeController) PopulateIPs(nodes *api.NodeList) (*api.NodeList, error)
 	return nodes, nil
 }
 
-// DoChecks performs health checking for given list of nodes.
-func (s *NodeController) DoChecks(nodes *api.NodeList) *api.NodeList {
+// UpdateNodesStatus performs health checking for given list of nodes.
+func (s *NodeController) UpdateNodesStatus(nodes *api.NodeList) *api.NodeList {
 	var wg sync.WaitGroup
 	wg.Add(len(nodes.Items))
 	for i := range nodes.Items {
 		go func(node *api.Node) {
 			node.Status.Conditions = s.DoCheck(node)
+			if err := s.updateNodeInfo(node); err != nil {
+				glog.Errorf("Can't collect information for node %s: %v", node.Name, err)
+			}
 			wg.Done()
 		}(&nodes.Items[i])
 	}
 	wg.Wait()
 	return nodes
+}
+
+func (s *NodeController) updateNodeInfo(node *api.Node) error {
+	nodeInfo, err := s.kubeletClient.GetNodeInfo(node.Name)
+	if err != nil {
+		return err
+	}
+	for key, value := range nodeInfo.Capacity {
+		node.Spec.Capacity[key] = value
+	}
+	node.Status.NodeInfo = nodeInfo.NodeSystemInfo
+	return nil
 }
 
 // DoCheck performs health checking for given node.
@@ -347,9 +410,10 @@ func (s *NodeController) deletePods(nodeID string) error {
 	return nil
 }
 
-// StaticNodes constructs and returns api.NodeList for static nodes. If error
-// occurs, an empty NodeList will be returned with a non-nil error info.
-func (s *NodeController) StaticNodes() (*api.NodeList, error) {
+// GetStaticNodesWithSpec constructs and returns api.NodeList for static nodes. If error
+// occurs, an empty NodeList will be returned with a non-nil error info. The
+// method only constructs spec fields for nodes.
+func (s *NodeController) GetStaticNodesWithSpec() (*api.NodeList, error) {
 	result := &api.NodeList{}
 	for _, nodeID := range s.nodes {
 		node := api.Node{
@@ -361,9 +425,10 @@ func (s *NodeController) StaticNodes() (*api.NodeList, error) {
 	return result, nil
 }
 
-// CloudNodes constructs and returns api.NodeList from cloudprovider. If error
-// occurs, an empty NodeList will be returned with a non-nil error info.
-func (s *NodeController) CloudNodes() (*api.NodeList, error) {
+// GetCloudNodesWithSpec constructs and returns api.NodeList from cloudprovider. If error
+// occurs, an empty NodeList will be returned with a non-nil error info. The
+// method only constructs spec fields for nodes.
+func (s *NodeController) GetCloudNodesWithSpec() (*api.NodeList, error) {
 	result := &api.NodeList{}
 	instances, ok := s.cloud.Instances()
 	if !ok {
@@ -385,6 +450,12 @@ func (s *NodeController) CloudNodes() (*api.NodeList, error) {
 		}
 		if resources != nil {
 			node.Spec.Capacity = resources.Capacity
+		}
+		instanceID, err := instances.ExternalID(node.Name)
+		if err != nil {
+			glog.Errorf("error getting instance id for %s: %v", node.Name, err)
+		} else {
+			node.Spec.ExternalID = instanceID
 		}
 		result.Items = append(result.Items, node)
 	}

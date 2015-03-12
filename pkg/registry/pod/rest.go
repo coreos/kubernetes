@@ -23,8 +23,8 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/errors"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/rest"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/v1beta1"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/validation"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/registry/generic"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
@@ -71,6 +71,17 @@ func (podStrategy) ValidateUpdate(obj, old runtime.Object) errors.ValidationErro
 	return validation.ValidatePodUpdate(obj.(*api.Pod), old.(*api.Pod))
 }
 
+type podStatusStrategy struct {
+	podStrategy
+}
+
+var StatusStrategy = podStatusStrategy{Strategy}
+
+func (podStatusStrategy) ValidateUpdate(obj, old runtime.Object) errors.ValidationErrorList {
+	// TODO: merge valid fields after update
+	return validation.ValidatePodStatusUpdate(obj.(*api.Pod), old.(*api.Pod))
+}
+
 // PodStatusGetter is an interface used by Pods to fetch and retrieve status info.
 type PodStatusGetter interface {
 	GetPodStatus(namespace, name string) (*api.PodStatus, error)
@@ -106,7 +117,7 @@ func PodStatusReset(cache PodStatusGetter) rest.ObjectFunc {
 }
 
 // MatchPod returns a generic matcher for a given label and field selector.
-func MatchPod(label, field labels.Selector) generic.Matcher {
+func MatchPod(label labels.Selector, field fields.Selector) generic.Matcher {
 	return generic.MatcherFunc(func(obj runtime.Object) (bool, error) {
 		podObj, ok := obj.(*api.Pod)
 		if !ok {
@@ -120,18 +131,10 @@ func MatchPod(label, field labels.Selector) generic.Matcher {
 // PodToSelectableFields returns a label set that represents the object
 // TODO: fields are not labels, and the validation rules for them do not apply.
 func PodToSelectableFields(pod *api.Pod) labels.Set {
-	// TODO we are populating both Status and DesiredState because selectors are not aware of API versions
-	// see https://github.com/GoogleCloudPlatform/kubernetes/pull/2503
-
-	var olderPodStatus v1beta1.PodStatus
-	api.Scheme.Convert(pod.Status.Phase, &olderPodStatus)
-
 	return labels.Set{
-		"name":                pod.Name,
-		"Status.Phase":        string(pod.Status.Phase),
-		"Status.Host":         pod.Status.Host,
-		"DesiredState.Status": string(olderPodStatus),
-		"DesiredState.Host":   pod.Status.Host,
+		"name":         pod.Name,
+		"status.phase": string(pod.Status.Phase),
+		"status.host":  pod.Status.Host,
 	}
 }
 

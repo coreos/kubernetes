@@ -73,7 +73,7 @@ func TestSetDefaulPodSpec(t *testing.T) {
 func TestSetDefaultContainer(t *testing.T) {
 	bp := &current.BoundPod{}
 	bp.Spec.Containers = []current.Container{{}}
-	bp.Spec.Containers[0].Ports = []current.Port{{}}
+	bp.Spec.Containers[0].Ports = []current.ContainerPort{{}}
 
 	obj2 := roundTrip(t, runtime.Object(bp))
 	bp2 := obj2.(*current.BoundPod)
@@ -110,5 +110,15 @@ func TestSetDefaulEndpointsProtocol(t *testing.T) {
 
 	if out.Protocol != current.ProtocolTCP {
 		t.Errorf("Expected protocol %s, got %s", current.ProtocolTCP, out.Protocol)
+	}
+}
+
+func TestSetDefaultNamespace(t *testing.T) {
+	s := &current.Namespace{}
+	obj2 := roundTrip(t, runtime.Object(s))
+	s2 := obj2.(*current.Namespace)
+
+	if s2.Status.Phase != current.NamespaceActive {
+		t.Errorf("Expected phase %v, got %v", current.NamespaceActive, s2.Status.Phase)
 	}
 }
