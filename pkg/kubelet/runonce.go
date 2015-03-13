@@ -62,8 +62,8 @@ func (kl *Kubelet) runOnce(pods []api.BoundPod) (results []RunPodResult, err err
 		pod := pods[i] // Make a copy
 		go func() {
 			var err error
-			if kl.containerRuntimeChoice == "rocket" {
-				err = kl.runRocketPod(pod)
+			if kl.containerRuntimeChoice == "docker" {
+				err = kl.runDockerPod(pod)
 			} else {
 				err = kl.runPod(pod)
 			}
@@ -91,8 +91,8 @@ func (kl *Kubelet) runOnce(pods []api.BoundPod) (results []RunPodResult, err err
 	return results, err
 }
 
-// runPod runs a single pod and wait until all containers are running.
-func (kl *Kubelet) runPod(pod api.BoundPod) error {
+// runDockerPod runs a single pod and wait until all containers are running.
+func (kl *Kubelet) runDockerPod(pod api.BoundPod) error {
 	delay := RunOnceRetryDelay
 	retry := 0
 	for {
@@ -109,7 +109,7 @@ func (kl *Kubelet) runPod(pod api.BoundPod) error {
 			return nil
 		}
 		glog.Infof("pod %q containers not running: syncing", pod.Name)
-		if err = kl.syncPod(&pod, dockerContainers); err != nil {
+		if err = kl.syncDockerPod(&pod, dockerContainers); err != nil {
 			return fmt.Errorf("error syncing pod: %v", err)
 		}
 		if retry >= RunOnceMaxRetries {
