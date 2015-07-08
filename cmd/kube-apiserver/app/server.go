@@ -77,6 +77,8 @@ type APIServer struct {
 	BasicAuthFile              string
 	ClientCAFile               string
 	TokenAuthFile              string
+	OpenIDClientID             string
+	OpenIDEndpoint             string
 	ServiceAccountKeyFile      string
 	ServiceAccountLookup       bool
 	AuthorizationMode          string
@@ -178,6 +180,8 @@ func (s *APIServer) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&s.BasicAuthFile, "basic-auth-file", s.BasicAuthFile, "If set, the file that will be used to admit requests to the secure port of the API server via http basic authentication.")
 	fs.StringVar(&s.ClientCAFile, "client-ca-file", s.ClientCAFile, "If set, any request presenting a client certificate signed by one of the authorities in the client-ca-file is authenticated with an identity corresponding to the CommonName of the client certificate.")
 	fs.StringVar(&s.TokenAuthFile, "token-auth-file", s.TokenAuthFile, "If set, the file that will be used to secure the secure port of the API server via token authentication.")
+	fs.StringVar(&s.OpenIDEndpoint, "openid-endpoint", s.OpenIDEndpoint, "If set, the endpoint will be used to verify the JWT using OpenID protocol")
+	fs.StringVar(&s.OpenIDClientID, "openid-client-id", s.OpenIDClientID, "The client ID for the OpenID client, must be set if openid-endpoint is set")
 	fs.StringVar(&s.ServiceAccountKeyFile, "service-account-key-file", s.ServiceAccountKeyFile, "File containing PEM-encoded x509 RSA private or public key, used to verify ServiceAccount tokens. If unspecified, --tls-private-key-file is used.")
 	fs.BoolVar(&s.ServiceAccountLookup, "service-account-lookup", s.ServiceAccountLookup, "If true, validate ServiceAccount tokens exist in etcd as part of authentication.")
 	fs.StringVar(&s.AuthorizationMode, "authorization-mode", s.AuthorizationMode, "Selects how to do authorization on the secure port.  One of: "+strings.Join(apiserver.AuthorizationModeChoices, ","))
@@ -326,7 +330,7 @@ func (s *APIServer) Run(_ []string) error {
 			glog.Warning("no RSA key provided, service account token authentication disabled")
 		}
 	}
-	authenticator, err := apiserver.NewAuthenticator(s.BasicAuthFile, s.ClientCAFile, s.TokenAuthFile, s.ServiceAccountKeyFile, s.ServiceAccountLookup, helper)
+	authenticator, err := apiserver.NewAuthenticator(s.BasicAuthFile, s.ClientCAFile, s.TokenAuthFile, s.OpenIDClientID, s.OpenIDEndpoint, s.ServiceAccountKeyFile, s.ServiceAccountLookup, helper)
 	if err != nil {
 		glog.Fatalf("Invalid Authentication Config: %v", err)
 	}

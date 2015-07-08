@@ -118,6 +118,38 @@
 			"Rev": "4cceaf7283b76f27c4a732b20730dcdb61053bf5"
 		},
 		{
+			"ImportPath": "github.com/coreos/go-oidc/http",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/jose",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/key",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/oauth2",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/oidc",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/pkg/crypto",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/pkg/net",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
+			"ImportPath": "github.com/coreos/go-oidc/pkg/time",
+			"Rev": "7fcb2f9ee70b8d74085a63e8cb352a0a89d87a1b"
+		},
+		{
 			"ImportPath": "github.com/coreos/go-semver/semver",
 			"Rev": "6fe83ccda8fb9b7549c9ab4ba47f47858bc950aa"
 		},
@@ -135,6 +167,18 @@
 			"ImportPath": "github.com/coreos/go-systemd/unit",
 			"Comment": "v2-27-g97e243d",
 			"Rev": "97e243d21a8e232e9d8af38ba2366dfcfceebeba"
+		},
+		{
+			"ImportPath": "github.com/coreos/pkg/capnslog",
+			"Rev": "99f6e6b8f8ea30b0f82769c1411691c44a66d015"
+		},
+		{
+			"ImportPath": "github.com/coreos/pkg/health",
+			"Rev": "99f6e6b8f8ea30b0f82769c1411691c44a66d015"
+		},
+		{
+			"ImportPath": "github.com/coreos/pkg/httputil",
+			"Rev": "99f6e6b8f8ea30b0f82769c1411691c44a66d015"
 		},
 		{
 			"ImportPath": "github.com/cpuguy83/go-md2man",
@@ -370,7 +414,11 @@
 		},
 		{
 			"ImportPath": "github.com/juju/ratelimit",
-			"Rev": "772f5c38e468398c4511514f4f6aa9a4185bc0a0"
+		        "Rev": "772f5c38e468398c4511514f4f6aa9a4185bc0a0",
+                },
+                {
+			"ImportPath": "github.com/jonboulle/clockwork",
+			"Rev": "3f831b65b61282ba6bece21b91beea2edc4c887a"
 		},
 		{
 			"ImportPath": "github.com/kardianos/osext",

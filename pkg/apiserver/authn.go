@@ -28,11 +28,12 @@ import (
 	"github.com/GoogleCloudPlatform/kubernetes/plugin/pkg/auth/authenticator/request/basicauth"
 	"github.com/GoogleCloudPlatform/kubernetes/plugin/pkg/auth/authenticator/request/union"
 	"github.com/GoogleCloudPlatform/kubernetes/plugin/pkg/auth/authenticator/request/x509"
+	"github.com/GoogleCloudPlatform/kubernetes/plugin/pkg/auth/authenticator/token/openid"
 	"github.com/GoogleCloudPlatform/kubernetes/plugin/pkg/auth/authenticator/token/tokenfile"
 )
 
 // NewAuthenticator returns an authenticator.Request or an error
-func NewAuthenticator(basicAuthFile, clientCAFile, tokenFile, serviceAccountKeyFile string, serviceAccountLookup bool, helper tools.EtcdHelper) (authenticator.Request, error) {
+func NewAuthenticator(basicAuthFile, clientCAFile, tokenFile, openIDClientID, openIDEndpoint, serviceAccountKeyFile string, serviceAccountLookup bool, helper tools.EtcdHelper) (authenticator.Request, error) {
 	var authenticators []authenticator.Request
 
 	if len(basicAuthFile) > 0 {
@@ -57,6 +58,14 @@ func NewAuthenticator(basicAuthFile, clientCAFile, tokenFile, serviceAccountKeyF
 			return nil, err
 		}
 		authenticators = append(authenticators, tokenAuth)
+	}
+
+	if len(openIDEndpoint) > 0 && len(openIDClientID) > 0 {
+		openIDAuth, err := newAuthenticatorFromOpenIDEndpoint(openIDClientID, openIDEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		authenticators = append(authenticators, openIDAuth)
 	}
 
 	if len(serviceAccountKeyFile) > 0 {
@@ -96,6 +105,16 @@ func newAuthenticatorFromBasicAuthFile(basicAuthFile string) (authenticator.Requ
 // newAuthenticatorFromTokenFile returns an authenticator.Request or an error
 func newAuthenticatorFromTokenFile(tokenAuthFile string) (authenticator.Request, error) {
 	tokenAuthenticator, err := tokenfile.NewCSV(tokenAuthFile)
+	if err != nil {
+		return nil, err
+	}
+
+	return bearertoken.New(tokenAuthenticator), nil
+}
+
+// newAuthenticatorFromOpenIDEndpoint returns an authenticator.Request or an error.
+func newAuthenticatorFromOpenIDEndpoint(clientID, endpoint string) (authenticator.Request, error) {
+	tokenAuthenticator, err := openid.NewOpenID(clientID, endpoint)
 	if err != nil {
 		return nil, err
 	}
