@@ -127,7 +127,7 @@ coreos:
         --cluster-dns=${DNS_SERVER_IP} \
         --cluster-domain=${DNS_DOMAIN} \
         --logtostderr=true \
-        --container-runtime=${KUBERNETES_CONTAINER_RUNTIME} \
+        --container-runtime=docker \
         --rkt-path=/opt/rkt-v${RKT_VERSON}/rkt \
         --configure-cbr0=${KUBERNETES_CONFIGURE_CBR0} \
         --pod-cidr=${MASTER_IP_RANGE} \
