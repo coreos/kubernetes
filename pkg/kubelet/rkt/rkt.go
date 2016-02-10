@@ -41,6 +41,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/record"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	"k8s.io/kubernetes/pkg/kubelet/network/kubenet"
 	proberesults "k8s.io/kubernetes/pkg/kubelet/prober/results"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/securitycontext"
@@ -87,7 +88,6 @@ const (
 
 	defaultImageTag          = "latest"
 	defaultRktAPIServiceAddr = "localhost:15441"
-	defaultNetworkName       = "rkt.kubernetes.io"
 
 	// ndots specifies the minimum number of dots that a domain name must contain for the resolver to consider it as FQDN (fully-qualified)
 	// we want to able to consider SRV lookup names like _dns._udp.kube-dns.default.svc to be considered relative.
@@ -99,6 +99,8 @@ const (
 	// TODO(yifan): Import them from docker2aci. See https://github.com/appc/docker2aci/issues/133.
 	appcDockerEntrypoint = "appc.io/docker/entrypoint"
 	appcDockerCmd        = "appc.io/docker/cmd"
+
+	DefaultK8sNetConfigFile = "net.d/k8s-cni.conf"
 )
 
 // Runtime implements the Containerruntime for rkt. The implementation
@@ -732,7 +734,7 @@ func (r *Runtime) generateRunCommand(pod *api.Pod, uuid string) (string, error) 
 	if pod.Spec.SecurityContext != nil && pod.Spec.SecurityContext.HostNetwork {
 		runPrepared = append(runPrepared, "--net=host")
 	} else {
-		runPrepared = append(runPrepared, fmt.Sprintf("--net=%s", defaultNetworkName))
+		runPrepared = append(runPrepared, fmt.Sprintf("--net=%s", kubenet.KubenetPluginName))
 	}
 
 	// Setup DNS.
@@ -1519,11 +1521,16 @@ func (r *Runtime) GetPodStatus(uid types.UID, name, namespace string) (*kubecont
 	if latestPod != nil {
 		// Try to fill the IP info.
 		for _, n := range latestPod.Networks {
-			if n.Name == defaultNetworkName {
+			if n.Name == kubenet.KubenetPluginName {
 				podStatus.IP = n.Ipv4
 			}
 		}
 	}
 
 	return podStatus, nil
+}
+
+// GetConfig returns the config for the rkt runtime.
+func (r *Runtime) GetConfig() *Config {
+	return r.config
 }
