@@ -414,6 +414,8 @@ func NewMainKubelet(
 			Path:            rktPath,
 			Stage1Image:     rktStage1Image,
 			InsecureOptions: "image,ondisk",
+			LocalConfigDir:  "/etc/rkt",
+			Dir:             "/var/lib/rkt",
 		}
 		rktRuntime, err := rkt.New(
 			conf,
@@ -3588,6 +3590,10 @@ func (kl *Kubelet) updatePodCIDR(cidr string) {
 	if kl.networkPlugin != nil {
 		details := make(map[string]interface{})
 		details[network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE_DETAIL_CIDR] = cidr
+		runtime, ok := kl.GetRuntime().(*rkt.Runtime)
+		if ok {
+			details[network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE_DETAIL_PATH] = path.Join(runtime.GetConfig().LocalConfigDir, rkt.DefaultK8sNetConfigFile)
+		}
 		kl.networkPlugin.Event(network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE, details)
 	}
 }
