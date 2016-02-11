@@ -110,7 +110,8 @@ coreos:
         --logtostderr=true \
         --container-runtime=${KUBERNETES_CONTAINER_RUNTIME} \
         --rkt-path=/opt/rkt/rkt \
-        --configure-cbr0=${KUBERNETES_CONFIGURE_CBR0}
+        --configure-cbr0=${KUBERNETES_CONFIGURE_CBR0} \
+        --network-plugin=kubenet
         Restart=always
         RestartSec=10
 
