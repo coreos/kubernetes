@@ -461,8 +461,14 @@ function kube::build::build_image() {
   kube::version::get_version_vars
   kube::version::save_version_vars "${build_context_dir}/kube-version-defs"
 
+  if kube::build::is_osx; then
+    local sed_opts=("-i ''")
+  else
+    local sed_opts=(-i)
+  fi
+
   cp build/build-image/Dockerfile ${build_context_dir}/Dockerfile
-  sed -i "s/KUBE_BUILD_IMAGE_CROSS/${KUBE_BUILD_IMAGE_CROSS}/" ${build_context_dir}/Dockerfile
+  sed ${sed_opts[@]} "s/KUBE_BUILD_IMAGE_CROSS/${KUBE_BUILD_IMAGE_CROSS}/" ${build_context_dir}/Dockerfile
   # We don't want to force-pull this image because it's based on a local image
   # (see kube::build::build_image_cross), not upstream.
   kube::build::docker_build "${KUBE_BUILD_IMAGE}" "${build_context_dir}" 'false'

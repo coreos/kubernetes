@@ -253,7 +253,7 @@
 		},
 		{
 			"ImportPath": "github.com/fsouza/go-dockerclient",
-			"Rev": "76fd6c68cf24c48ee6a2b25def997182a29f940e"
+			"Rev": "0099401a7342ad77e71ca9f9a57c5e72fb80f6b2"
 		},
 		{
 			"ImportPath": "github.com/garyburd/redigo/internal",
