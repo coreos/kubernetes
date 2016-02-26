@@ -1235,6 +1235,7 @@ func makeMounts(pod *api.Pod, podDir string, container *api.Container, hostName,
 	// When the pause container is being created, its IP is still unknown. Hence, PodIP will not have been set.
 	mountEtcHostsFile := (pod.Spec.SecurityContext == nil || !pod.Spec.SecurityContext.HostNetwork) && len(podIP) > 0
 	glog.V(3).Infof("container: %v/%v/%v podIP: %q creating hosts mount: %v", pod.Namespace, pod.Name, container.Name, podIP, mountEtcHostsFile)
+	mountEtcHostsFile = false // Hack for rkt.
 	mounts := []kubecontainer.Mount{}
 	for _, mount := range container.VolumeMounts {
 		mountEtcHostsFile = mountEtcHostsFile && (mount.MountPath != etcHostsPath)
