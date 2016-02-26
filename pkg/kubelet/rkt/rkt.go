@@ -755,6 +755,9 @@ func (r *Runtime) generateRunCommand(pod *api.Pod, uuid string) (string, error) 
 	if len(dnsServers) > 0 || len(dnsSearches) > 0 {
 		runPrepared = append(runPrepared, fmt.Sprintf("--dns-opt=%s", defaultDNSOption))
 	}
+
+	runPrepared = append(runPrepared, fmt.Sprintf("--hostname=%s", pod.Name))
+
 	runPrepared = append(runPrepared, uuid)
 	return strings.Join(runPrepared, " "), nil
 }
