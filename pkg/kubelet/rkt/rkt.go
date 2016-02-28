@@ -818,8 +818,6 @@ func (r *Runtime) preparePod(pod *api.Pod, pullSecrets []api.Secret) (string, *k
 	// TODO handle pod.Spec.HostIPC
 
 	units := []*unit.UnitOption{
-		// This makes the service show up for 'systemctl list-units' even if it exits successfully.
-		newUnitOption("Service", "RemainAfterExit", "true"),
 		newUnitOption("Service", "ExecStart", runPrepared),
 		// This enables graceful stop.
 		newUnitOption("Service", "KillMode", "mixed"),
