@@ -136,10 +136,11 @@ coreos:
         --logtostderr=true \
         --container-runtime=docker \
         --rkt-path=/opt/rkt/rkt \
-        --configure-cbr0=${KUBERNETES_CONFIGURE_CBR0} \
+        --configure-cbr0=true \
         --pod-cidr=${MASTER_IP_RANGE} \
         --register-schedulable=false \
-        --reconcile-cidr=false
+        --reconcile-cidr=false \
+        --hairpin-mode=none
         Restart=always
         RestartSec=10
         
