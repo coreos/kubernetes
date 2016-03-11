@@ -42,7 +42,7 @@ coreos:
         EnvironmentFile=/etc/kube-env
         ExecStartPre=/usr/bin/mkdir -p /etc/rkt
         ExecStartPre=/usr/bin/mkdir -p /opt/downloads
-        ExecStartPre=/usr/bin/curl --location --create-dirs --output /opt/downloads/rkt.tar.gz https://storage.googleapis.com/rkt-bin/rkt-bin.tar.gz
+        ExecStartPre=/usr/bin/curl --location --create-dirs --output /opt/downloads/rkt.tar.gz https://storage.googleapis.com/rkt-bin/${RKT_VERSION}.tar.gz
         ExecStartPre=/usr/bin/tar xf /opt/downloads/rkt.tar.gz -C /opt --overwrite
         ExecStartPre=/usr/bin/rm -fr /opt/rkt
         ExecStart=/usr/bin/mv /opt/bin /opt/rkt
