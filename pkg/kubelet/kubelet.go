@@ -283,10 +283,10 @@ func NewMainKubelet(
 
 	// TODO: remove when internal cbr0 implementation gets removed in favor
 	// of the kubenet network plugin
-	if networkPluginName == "kubenet" {
-		configureCBR0 = false
-		flannelExperimentalOverlay = false
-	}
+	//if networkPluginName == "kubenet" {
+	//	configureCBR0 = false
+	//	flannelExperimentalOverlay = false
+	//}
 
 	klet := &Kubelet{
 		hostname:                       hostname,
