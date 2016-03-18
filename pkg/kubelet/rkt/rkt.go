@@ -426,11 +426,17 @@ func setApp(imgManifest *appcschema.ImageManifest, c *api.Container, opts *kubec
 	var command, args []string
 	cmd, ok := imgManifest.Annotations.Get(appcDockerEntrypoint)
 	if ok {
-		command = strings.Fields(cmd)
+		err := json.Unmarshal([]byte(cmd), &command)
+		if err != nil {
+			return fmt.Errorf("cannot unmarshal ENTRYPOINT %q: %v", cmd, err)
+		}
 	}
 	ag, ok := imgManifest.Annotations.Get(appcDockerCmd)
 	if ok {
-		args = strings.Fields(ag)
+		err := json.Unmarshal([]byte(ag), &args)
+		if err != nil {
+			return fmt.Errorf("cannot unmarshal CMD %q: %v", ag, err)
+		}
 	}
 	userCommand, userArgs := kubecontainer.ExpandContainerCommandAndArgs(c, opts.Envs)
 
