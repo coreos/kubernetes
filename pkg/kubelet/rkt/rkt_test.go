@@ -109,8 +109,9 @@ func makeRktPod(rktPodState rktapi.PodState,
 			Name:  appNames[i],
 			State: appStates[i],
 			Image: &rktapi.Image{
-				Id:   imgIDs[i],
-				Name: imgNames[i],
+				Id:      imgIDs[i],
+				Name:    imgNames[i],
+				Version: "latest",
 				Manifest: mustMarshalImageManifest(
 					&appcschema.ImageManifest{
 						ACKind:    appcschema.ImageManifestKind,
@@ -372,7 +373,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4002:app-1"),
 							Name:    "app-1",
-							Image:   "img-name-1",
+							Image:   "img-name-1:latest",
 							Hash:    1001,
 							Created: 100000,
 							State:   "running",
@@ -380,7 +381,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4002:app-2"),
 							Name:    "app-2",
-							Image:   "img-name-2",
+							Image:   "img-name-2:latest",
 							Hash:    1002,
 							Created: 100000,
 							State:   "exited",
@@ -432,7 +433,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4002:app-1"),
 							Name:    "app-1",
-							Image:   "img-name-1",
+							Image:   "img-name-1:latest",
 							Hash:    1001,
 							Created: 100000,
 							State:   "running",
@@ -440,7 +441,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4002:app-2"),
 							Name:    "app-2",
-							Image:   "img-name-2",
+							Image:   "img-name-2:latest",
 							Hash:    1002,
 							Created: 100000,
 							State:   "exited",
@@ -455,7 +456,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4003:app-11"),
 							Name:    "app-11",
-							Image:   "img-name-11",
+							Image:   "img-name-11:latest",
 							Hash:    10011,
 							Created: 90000,
 							State:   "exited",
@@ -463,7 +464,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4003:app-22"),
 							Name:    "app-22",
-							Image:   "img-name-22",
+							Image:   "img-name-22:latest",
 							Hash:    10022,
 							Created: 90000,
 							State:   "exited",
@@ -471,7 +472,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4004:app-11"),
 							Name:    "app-11",
-							Image:   "img-name-11",
+							Image:   "img-name-11:latest",
 							Hash:    10011,
 							Created: 100000,
 							State:   "running",
@@ -479,7 +480,7 @@ func TestGetPods(t *testing.T) {
 						{
 							ID:      kubecontainer.BuildContainerID("rkt", "uuid-4004:app-22"),
 							Name:    "app-22",
-							Image:   "img-name-22",
+							Image:   "img-name-22:latest",
 							Hash:    10022,
 							Created: 100000,
 							State:   "running",
