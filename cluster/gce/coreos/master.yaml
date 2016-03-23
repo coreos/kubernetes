@@ -1,7 +1,13 @@
 #cloud-config
 
 coreos:
+  update:
+    reboot-strategy: off
   units:
+    - name: update-engine.service
+      command: stop
+    - name: locksmithd.service
+      command: stop
     - name: kube-env.service
       command: start
       content: |
@@ -36,9 +42,10 @@ coreos:
         EnvironmentFile=/etc/kube-env
         ExecStartPre=/usr/bin/mkdir -p /etc/rkt
         ExecStartPre=/usr/bin/mkdir -p /opt/downloads
-        ExecStartPre=/usr/bin/curl --fail --silent --show-error --location --create-dirs --output \
-        /opt/downloads/rkt.tar.gz https://github.com/coreos/rkt/releases/download/v${RKT_VERSION}/rkt-v${RKT_VERSION}.tar.gz
-        ExecStart=/usr/bin/tar xf /opt/downloads/rkt.tar.gz -C /opt --overwrite
+        ExecStartPre=/usr/bin/curl --location --create-dirs --output /opt/downloads/rkt.tar.gz https://storage.googleapis.com/rkt-bin/rkt-bin.tar.gz
+        ExecStartPre=/usr/bin/tar xf /opt/downloads/rkt.tar.gz -C /opt --overwrite
+        ExecStartPre=/usr/bin/rm -fr /opt/rkt
+        ExecStart=/usr/bin/mv /opt/bin /opt/rkt
 
     - name: kubernetes-download-salt.service
       command: start
@@ -127,12 +134,13 @@ coreos:
         --cluster-dns=${DNS_SERVER_IP} \
         --cluster-domain=${DNS_DOMAIN} \
         --logtostderr=true \
-        --container-runtime=${KUBERNETES_CONTAINER_RUNTIME} \
-        --rkt-path=/opt/rkt-v${RKT_VERSON}/rkt \
-        --configure-cbr0=${KUBERNETES_CONFIGURE_CBR0} \
+        --container-runtime=docker \
+        --rkt-path=/opt/rkt/rkt \
+        --configure-cbr0=true \
         --pod-cidr=${MASTER_IP_RANGE} \
         --register-schedulable=false \
-        --reconcile-cidr=false
+        --reconcile-cidr=false \
+        --hairpin-mode=none
         Restart=always
         RestartSec=10
         
