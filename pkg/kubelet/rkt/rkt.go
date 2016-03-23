@@ -52,6 +52,7 @@ import (
 )
 
 const (
+	// Random comments.
 	RktType = "rkt"
 
 	minimumAppcVersion       = "0.7.4"
