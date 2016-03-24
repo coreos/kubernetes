@@ -283,10 +283,10 @@ func NewMainKubelet(
 
 	// TODO: remove when internal cbr0 implementation gets removed in favor
 	// of the kubenet network plugin
-	if networkPluginName == "kubenet" {
-		configureCBR0 = false
-		flannelExperimentalOverlay = false
-	}
+	//if networkPluginName == "kubenet" {
+	//	configureCBR0 = false
+	//	flannelExperimentalOverlay = false
+	//}
 
 	klet := &Kubelet{
 		hostname:                       hostname,
@@ -414,6 +414,8 @@ func NewMainKubelet(
 			Path:            rktPath,
 			Stage1Image:     rktStage1Image,
 			InsecureOptions: "image,ondisk",
+			LocalConfigDir:  "/etc/rkt",
+			Dir:             "/var/lib/rkt",
 		}
 		rktRuntime, err := rkt.New(
 			conf,
@@ -1233,6 +1235,7 @@ func makeMounts(pod *api.Pod, podDir string, container *api.Container, hostName,
 	// When the pause container is being created, its IP is still unknown. Hence, PodIP will not have been set.
 	mountEtcHostsFile := (pod.Spec.SecurityContext == nil || !pod.Spec.SecurityContext.HostNetwork) && len(podIP) > 0
 	glog.V(3).Infof("container: %v/%v/%v podIP: %q creating hosts mount: %v", pod.Namespace, pod.Name, container.Name, podIP, mountEtcHostsFile)
+	mountEtcHostsFile = false // Hack for rkt.
 	mounts := []kubecontainer.Mount{}
 	for _, mount := range container.VolumeMounts {
 		mountEtcHostsFile = mountEtcHostsFile && (mount.MountPath != etcHostsPath)
@@ -3588,6 +3591,10 @@ func (kl *Kubelet) updatePodCIDR(cidr string) {
 	if kl.networkPlugin != nil {
 		details := make(map[string]interface{})
 		details[network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE_DETAIL_CIDR] = cidr
+		runtime, ok := kl.GetRuntime().(*rkt.Runtime)
+		if ok {
+			details[network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE_DETAIL_PATH] = path.Join(runtime.GetConfig().LocalConfigDir, rkt.DefaultK8sNetConfigFile)
+		}
 		kl.networkPlugin.Event(network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE, details)
 	}
 }
