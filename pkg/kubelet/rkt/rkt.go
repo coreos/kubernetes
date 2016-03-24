@@ -41,13 +41,13 @@ import (
 	"k8s.io/kubernetes/pkg/client/record"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	"k8s.io/kubernetes/pkg/kubelet/network/kubenet"
 	proberesults "k8s.io/kubernetes/pkg/kubelet/prober/results"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/securitycontext"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
 	utilexec "k8s.io/kubernetes/pkg/util/exec"
-	"k8s.io/kubernetes/pkg/util/sets"
 	utilstrings "k8s.io/kubernetes/pkg/util/strings"
 )
 
@@ -86,7 +86,6 @@ const (
 	dockerAuthTemplate = `{"rktKind":"dockerAuth","rktVersion":"v1","registries":[%q],"credentials":{"user":%q,"password":%q}}`
 
 	defaultRktAPIServiceAddr = "localhost:15441"
-	defaultNetworkName       = "rkt.kubernetes.io"
 
 	// ndots specifies the minimum number of dots that a domain name must contain for the resolver to consider it as FQDN (fully-qualified)
 	// we want to able to consider SRV lookup names like _dns._udp.kube-dns.default.svc to be considered relative.
@@ -98,6 +97,8 @@ const (
 	// TODO(yifan): Import them from docker2aci. See https://github.com/appc/docker2aci/issues/133.
 	appcDockerEntrypoint = "appc.io/docker/entrypoint"
 	appcDockerCmd        = "appc.io/docker/cmd"
+
+	DefaultK8sNetConfigFile = "net.d/k8s-cni.conf"
 )
 
 // Runtime implements the Containerruntime for rkt. The implementation
@@ -737,7 +738,7 @@ func (r *Runtime) generateRunCommand(pod *api.Pod, uuid string) (string, error) 
 	if pod.Spec.SecurityContext != nil && pod.Spec.SecurityContext.HostNetwork {
 		runPrepared = append(runPrepared, "--net=host")
 	} else {
-		runPrepared = append(runPrepared, fmt.Sprintf("--net=%s", defaultNetworkName))
+		runPrepared = append(runPrepared, fmt.Sprintf("--net=%s", kubenet.KubenetPluginName))
 	}
 
 	// Setup DNS.
@@ -754,6 +755,9 @@ func (r *Runtime) generateRunCommand(pod *api.Pod, uuid string) (string, error) 
 	if len(dnsServers) > 0 || len(dnsSearches) > 0 {
 		runPrepared = append(runPrepared, fmt.Sprintf("--dns-opt=%s", defaultDNSOption))
 	}
+
+	runPrepared = append(runPrepared, fmt.Sprintf("--hostname=%s", pod.Name))
+
 	runPrepared = append(runPrepared, uuid)
 	return strings.Join(runPrepared, " "), nil
 }
@@ -1190,40 +1194,40 @@ func (r *Runtime) SyncPod(pod *api.Pod, podStatus api.PodStatus, internalPodStat
 // TODO(yifan): Enforce the gc policy, also, it would be better if we can
 // just GC kubernetes pods.
 func (r *Runtime) GarbageCollect(gcPolicy kubecontainer.ContainerGCPolicy) error {
-	if err := exec.Command("systemctl", "reset-failed").Run(); err != nil {
-		glog.Errorf("rkt: Failed to reset failed systemd services: %v, continue to gc anyway...", err)
-	}
-
-	if _, err := r.runCommand("gc", "--grace-period="+gcPolicy.MinAge.String(), "--expire-prepared="+gcPolicy.MinAge.String()); err != nil {
-		glog.Errorf("rkt: Failed to gc: %v", err)
-	}
-
-	// GC all inactive systemd service files.
-	units, err := r.systemd.ListUnits()
-	if err != nil {
-		glog.Errorf("rkt: Failed to list units: %v", err)
-		return err
-	}
-	runningKubernetesUnits := sets.NewString()
-	for _, u := range units {
-		if strings.HasPrefix(u.Name, kubernetesUnitPrefix) && u.SubState == "running" {
-			runningKubernetesUnits.Insert(u.Name)
-		}
-	}
-
-	files, err := ioutil.ReadDir(systemdServiceDir)
-	if err != nil {
-		glog.Errorf("rkt: Failed to read the systemd service directory: %v", err)
-		return err
-	}
-	for _, f := range files {
-		if strings.HasPrefix(f.Name(), kubernetesUnitPrefix) && !runningKubernetesUnits.Has(f.Name()) && f.ModTime().Before(time.Now().Add(-gcPolicy.MinAge)) {
-			glog.V(4).Infof("rkt: Removing inactive systemd service file: %v", f.Name())
-			if err := os.Remove(serviceFilePath(f.Name())); err != nil {
-				glog.Warningf("rkt: Failed to remove inactive systemd service file %v: %v", f.Name(), err)
-			}
-		}
-	}
+	//if err := exec.Command("systemctl", "reset-failed").Run(); err != nil {
+	//	glog.Errorf("rkt: Failed to reset failed systemd services: %v, continue to gc anyway...", err)
+	//}
+	//
+	//if _, err := r.runCommand("gc", "--grace-period="+gcPolicy.MinAge.String(), "--expire-prepared="+gcPolicy.MinAge.String()); err != nil {
+	//	glog.Errorf("rkt: Failed to gc: %v", err)
+	//}
+	//
+	//// GC all inactive systemd service files.
+	//units, err := r.systemd.ListUnits()
+	//if err != nil {
+	//	glog.Errorf("rkt: Failed to list units: %v", err)
+	//	return err
+	//}
+	//runningKubernetesUnits := sets.NewString()
+	//for _, u := range units {
+	//	if strings.HasPrefix(u.Name, kubernetesUnitPrefix) && u.SubState == "running" {
+	//		runningKubernetesUnits.Insert(u.Name)
+	//	}
+	//}
+	//
+	//files, err := ioutil.ReadDir(systemdServiceDir)
+	//if err != nil {
+	//	glog.Errorf("rkt: Failed to read the systemd service directory: %v", err)
+	//	return err
+	//}
+	//for _, f := range files {
+	//	if strings.HasPrefix(f.Name(), kubernetesUnitPrefix) && !runningKubernetesUnits.Has(f.Name()) && f.ModTime().Before(time.Now().Add(-gcPolicy.MinAge)) {
+	//		glog.V(4).Infof("rkt: Removing inactive systemd service file: %v", f.Name())
+	//		if err := os.Remove(serviceFilePath(f.Name())); err != nil {
+	//			glog.Warningf("rkt: Failed to remove inactive systemd service file %v: %v", f.Name(), err)
+	//		}
+	//	}
+	//}
 	return nil
 }
 
@@ -1524,11 +1528,16 @@ func (r *Runtime) GetPodStatus(uid types.UID, name, namespace string) (*kubecont
 	if latestPod != nil {
 		// Try to fill the IP info.
 		for _, n := range latestPod.Networks {
-			if n.Name == defaultNetworkName {
+			if n.Name == kubenet.KubenetPluginName {
 				podStatus.IP = n.Ipv4
 			}
 		}
 	}
 
 	return podStatus, nil
+}
+
+// GetConfig returns the config for the rkt runtime.
+func (r *Runtime) GetConfig() *Config {
+	return r.config
 }
