@@ -857,6 +857,7 @@ var map_NodeSpec = map[string]string{
 	"externalID":    "External ID of the node assigned by some machine database (e.g. a cloud provider). Deprecated.",
 	"providerID":    "ID of the node assigned by the cloud provider in the format: <ProviderName>://<ProviderSpecificNodeID>",
 	"unschedulable": "Unschedulable controls node schedulability of new pods. By default, node is schedulable. More info: http://releases.k8s.io/release-1.2/docs/admin/node.md#manual-node-administration\"`",
+	"untrusted":     "Untrusted indicates that the node is not trusted. By default node is trusted.",
 }
 
 func (NodeSpec) SwaggerDoc() map[string]string {
