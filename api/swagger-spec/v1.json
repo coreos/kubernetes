@@ -15606,6 +15606,10 @@
      "unschedulable": {
       "type": "boolean",
       "description": "Unschedulable controls node schedulability of new pods. By default, node is schedulable. More info: http://releases.k8s.io/release-1.2/docs/admin/node.md#manual-node-administration\"`"
+     },
+     "untrusted": {
+      "type": "boolean",
+      "description": "Untrusted indicates that the node is not trusted. By default node is trusted."
      }
     }
    },
