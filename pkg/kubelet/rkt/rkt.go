@@ -1125,6 +1125,12 @@ func (r *Runtime) SyncPod(pod *api.Pod, podStatus api.PodStatus, internalPodStat
 			result.Fail(err)
 		}
 	}()
+
+	// Let's just try to set the promisc everytime!
+	if err := exec.Command("ip", "link", "set", "cbr0", "promisc", "on").Run(); err != nil {
+		glog.Error(err)
+	}
+
 	// TODO: (random-liu) Stop using running pod in SyncPod()
 	// TODO: (random-liu) Rename podStatus to apiPodStatus, rename internalPodStatus to podStatus, and use new pod status as much as possible,
 	// we may stop using apiPodStatus someday.
