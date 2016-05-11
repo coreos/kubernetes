@@ -10,6 +10,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update -y \
     util-linux \
     socat \
     curl \
+    git \
     nfs-common \
     && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
     && DEBIAN_FRONTEND=noninteractive apt-get autoremove -y \
