@@ -5,6 +5,7 @@ IMAGE_VERSION = $(subst +,_,$(KUBERNETES_VERSION))
 
 TAG = quay.io/coreos/hyperkube:$(IMAGE_VERSION)
 HYPERKUBE = ../_output/dockerized/bin/linux/amd64/hyperkube
+BUILD_TARGET = release
 
 .PHONY: all container push clean
 
@@ -20,7 +21,7 @@ push:
 	docker push $(TAG)
 
 $(HYPERKUBE):
-	make -C .. release
+	make -C .. $(BUILD_TARGET)
 
 clean:
 	make -C .. clean
