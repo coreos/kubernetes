@@ -100,6 +100,8 @@ else
 endif
 	# Download CNI
 	curl -sSL --retry 5 https://storage.googleapis.com/kubernetes-release/network-plugins/cni-${ARCH}-${CNI_RELEASE}.tar.gz | tar -xz -C ${TEMP_DIR}/cni-bin
+	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.3.1/calico
+	chmod +x ${TEMP_DIR}/cni-bin/calico
 
 	docker build -t ${REGISTRY}/hyperkube-${ARCH}:${VERSION} ${TEMP_DIR}
 	rm -rf "${TEMP_DIR}"
