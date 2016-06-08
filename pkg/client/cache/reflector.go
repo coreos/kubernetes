@@ -265,7 +265,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 	}
 	listMetaInterface, err := meta.ListAccessor(list)
 	if err != nil {
-		return fmt.Errorf("%s: Unable to understand list result %#v: %v", r.name, list, err)
+		return fmt.Errorf("%s: Unable to understand list result %#v (%v)", r.name, list, err)
 	}
 	resourceVersion = listMetaInterface.GetResourceVersion()
 	items, err := meta.ExtractList(list)
