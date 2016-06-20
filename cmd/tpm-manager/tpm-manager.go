@@ -344,10 +344,10 @@ func run(stop <-chan struct{}) {
 	_, configController := framework.NewInformer(
 		&cache.ListWatch{
 			ListFunc: func(options api.ListOptions) (runtime.Object, error) {
-				return manager.client.ConfigMaps("default").List(options)
+				return manager.client.ConfigMaps("kube-system").List(options)
 			},
 			WatchFunc: func(options api.ListOptions) (watch.Interface, error) {
-				return manager.client.ConfigMaps("default").Watch(options)
+				return manager.client.ConfigMaps("kube-system").Watch(options)
 			},
 		},
 		&api.ConfigMap{},

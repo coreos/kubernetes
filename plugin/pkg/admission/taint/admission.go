@@ -35,7 +35,7 @@ import (
 	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 )
 
-const untrusted string = "tpm.coreos.com/untrusted"
+const TaintKey string = "Untrusted"
 
 func newRbacClient(client clientset.Interface) validation.AuthorizationRuleResolver {
 	c := &rbacClient{client.Rbac()}
@@ -89,18 +89,18 @@ type taintAdmit struct {
 	client clientset.Interface
 }
 
-// Determine whether a node is untrusted
-func isUntrusted(node *api.Node) (bool, error) {
+// Determine whether a node is trusted
+func isTrusted(node *api.Node) (bool, error) {
 	taints, err := api.GetTaintsFromNodeAnnotations(node.Annotations)
 	if err != nil {
-		return false, err
+		return true, err
 	}
 	for _, taint := range taints {
-		if taint.Key == "Untrusted" {
-			return true, nil
+		if taint.Key == TaintKey {
+			return false, nil
 		}
 	}
-	return false, nil
+	return true, nil
 }
 
 func toleratesUntrusted(pod *api.Pod) (bool, error) {
@@ -109,7 +109,7 @@ func toleratesUntrusted(pod *api.Pod) (bool, error) {
 		return false, err
 	}
 	for _, toleration := range tolerations {
-		if toleration.Key == "Untrusted" {
+		if toleration.Key == TaintKey {
 			return true, nil
 		}
 	}
@@ -124,18 +124,21 @@ func invalidateNode(node *api.Node) error {
 	taints, err := api.GetTaintsFromNodeAnnotations(node.Annotations)
 	newTaints := []api.Taint{}
 	untrustedTaint := api.Taint{
-		Key:    "Untrusted",
+		Key:    TaintKey,
 		Value:  "true",
 		Effect: api.TaintEffectNoSchedule,
 	}
 	for _, taint := range taints {
-		if taint.Key == "Untrusted" {
+		if taint.Key == TaintKey {
 			continue
 		}
 		newTaints = append(newTaints, taint)
 	}
 	newTaints = append(newTaints, untrustedTaint)
 	jsonContent, err := json.Marshal(newTaints)
+	if err != nil {
+		glog.Errorf("Unable to marshal new taints for %s", node.GetName())
+	}
 	node.Annotations[api.TaintsAnnotationKey] = string(jsonContent)
 	return err
 }
@@ -147,9 +150,9 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 		return nil
 	}
 
-	configmap, err := t.client.Core().ConfigMaps("default").Get("taint.coreos.com")
+	configmap, err := t.client.Core().ConfigMaps("kube-system").Get("taint.coreos.com")
 	if err != nil {
-		return apierrors.NewBadRequest("Unable to obtain configmap")
+		return apierrors.NewBadRequest("Unable to obtain taint.coreos.com ConfigMap")
 	}
 
 	if configmap == nil || configmap.Data["taint"] != "true" {
@@ -166,7 +169,7 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 	} else {
 		// Otherwise check whether the user has a role that provides the tpmadmin attribute
 		rbac := newRbacClient(t.client)
-		ctx := api.WithUser(api.WithNamespace(api.NewContext(), "default"), user)
+		ctx := api.WithUser(api.WithNamespace(api.NewContext(), "kube-system"), user)
 		rules, err := rbac.GetEffectivePolicyRules(ctx)
 		if err == nil {
 			for _, rule := range rules {
@@ -177,13 +180,12 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 				}
 			}
 		} else {
-			glog.Errorf("Unable to obtain user rules: %v", err)
+			glog.Errorf("Unable to obtain user rules for taintAdmissionController: %v", err)
 		}
 	}
 
 	// Allow admin users or request over the insecure socket to do whatever they want
 	if tpmAdmin == true {
-		glog.Errorf("TPMadmin = true")
 		return nil
 	}
 
@@ -224,17 +226,17 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 		}
 
 		// If an external update tries to switch a node from untrusted to trusted, force it back to untrusted
-		untrusted, err := isUntrusted(node)
+		trusted, err := isTrusted(node)
 		if err != nil {
 			return fmt.Errorf("Unable to identify node trusted status: %v", err)
 		}
-		if untrusted == false {
+		if trusted == true {
 			oldNode, err := t.client.Core().Nodes().Get(node.Name)
 			if err != nil {
 				return fmt.Errorf("Attempting to update a node that doesn't exist? %v", err)
 			}
-			oldUntrusted, err := isUntrusted(oldNode)
-			if err != nil || oldUntrusted {
+			oldTrusted, err := isTrusted(oldNode)
+			if err != nil || oldTrusted == false {
 				glog.Errorf("User %v attempted to flag untrusted node %v as trusted", user, node.Name)
 				invalidateNode(node)
 			}

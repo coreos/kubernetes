@@ -21,8 +21,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/client/typed/dynamic"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 type TPMHandler struct {
@@ -43,13 +41,9 @@ type Tpm struct {
 	Address string
 }
 
-func (t *TPMHandler) Setup(config *restclient.Config) error {
-	if err := client.SetKubernetesDefaults(config); err != nil {
-		return err
-	}
-	config.APIPath = "apis/coreos.com"
-	config.Host = "http://localhost:8080"
-	tpmclient, err := dynamic.NewClient(config)
+func (t *TPMHandler) Setup(refconfig *restclient.Config) error {
+	config := *refconfig
+	tpmclient, err := dynamic.NewClient(&config)
 	if err != nil {
 		return err
 	}
@@ -58,14 +52,11 @@ func (t *TPMHandler) Setup(config *restclient.Config) error {
 		Name:       "tpms",
 		Namespaced: true,
 	}
-	tpmresourceclient := tpmclient.Resource(tpmresource, "default")
-	if err != nil {
-		return err
-	}
-	t.tpmclient = tpmresourceclient
+	tpmResourceClient := tpmclient.Resource(tpmresource, "default")
+	t.tpmclient = tpmResourceClient
 
 	config.APIPath = "apis/tpm.coreos.com"
-	policyclient, err := dynamic.NewClient(config)
+	policyclient, err := dynamic.NewClient(&config)
 	if err != nil {
 		return err
 	}
@@ -75,9 +66,6 @@ func (t *TPMHandler) Setup(config *restclient.Config) error {
 		Namespaced: true,
 	}
 	policyresourceclient := policyclient.Resource(policyresource, "default")
-	if err != nil {
-		return err
-	}
 	t.PolicyClient = policyresourceclient
 
 	return nil
@@ -97,10 +85,17 @@ func (t *TPMHandler) GetPolicies() ([]map[string]PCRConfig, error) {
 		if policy == nil {
 			continue
 		}
-		policymap := policy.(map[string]interface{})
+		policymap, ok := policy.(map[string]interface{})
+		if !ok {
+			glog.Errorf("Unable to decode unstructured object %s", unstructuredPolicy.GetName())
+			continue
+		}
 		for pcr, unstructuredpcrconfig := range policymap {
 			var pcrconfig PCRConfig
 			err = mapstructure.Decode(unstructuredpcrconfig, &pcrconfig)
+			if err != nil {
+				glog.Errorf("Unable to unmarshal policy json from %s", unstructuredPolicy.GetName())
+			}
 			pcrconfig.Source = unstructuredPolicy.GetName()
 			pcrconfig.Policyref = unstructuredPolicy.GetSelfLink()
 			config[pcr] = pcrconfig
@@ -111,8 +106,6 @@ func (t *TPMHandler) GetPolicies() ([]map[string]PCRConfig, error) {
 }
 
 func (t *TPMHandler) Get(address string, allowEmpty bool) (*Tpm, error) {
-	var tpm *Tpm
-
 	c := tpmclient.New(address, 30*time.Second)
 	ekcert, err := c.GetEKCert()
 
@@ -122,9 +115,8 @@ func (t *TPMHandler) Get(address string, allowEmpty bool) (*Tpm, error) {
 
 	eksha := sha1.Sum(ekcert)
 	ekhash := hex.EncodeToString(eksha[:])
-	tpm = &Tpm{}
-	unstructuredTpm := &runtime.Unstructured{}
-	unstructuredTpm, err = t.tpmclient.Get(ekhash)
+	tpm := &Tpm{}
+	unstructuredTpm, err := t.tpmclient.Get(ekhash)
 
 	if err != nil {
 		if allowEmpty == false {
@@ -155,9 +147,21 @@ func (t *TPMHandler) Get(address string, allowEmpty bool) (*Tpm, error) {
 		}
 	}
 
-	tpm.EKCert, _ = base64.StdEncoding.DecodeString(unstructuredTpm.Object["EKCert"].(string))
+	tpm.EKCert, err = base64.StdEncoding.DecodeString(unstructuredTpm.Object["EKCert"].(string))
+	if err != nil {
+		glog.Errorf("Unable to decode TPM EK Cert from %s", unstructuredTpm.GetName())
+		return nil, err
+	}
 	tpm.AIKPub, _ = base64.StdEncoding.DecodeString(unstructuredTpm.Object["AIKPub"].(string))
+	if err != nil {
+		glog.Errorf("Unable to decode TPM public AIK from %s", unstructuredTpm.GetName())
+		return nil, err
+	}
 	tpm.AIKBlob, _ = base64.StdEncoding.DecodeString(unstructuredTpm.Object["AIKBlob"].(string))
+	if err != nil {
+		glog.Errorf("Unable to decode TPM AIK blob from %s", unstructuredTpm.GetName())
+		return nil, err
+	}
 
 	if len(tpm.EKCert) == 0 {
 		tpm.EKCert = ekcert
@@ -218,9 +222,13 @@ func ValidateLogConsistency(log []tspiconst.Log) error {
 }
 
 func ValidateLog(log []tspiconst.Log, quote [][]byte) error {
+	// Replay the log and generate the hash values we'd have if the log is correct
+	// Each PCR is 20 bytes, and we support up to 24 of them
 	var virt_pcrs [24][20]byte
 
 	for _, entry := range log {
+		// Append the SHA in the log to the current PCR value and generate the
+		// new PCR value
 		var tmp [40]byte
 		cur := tmp[0:20]
 		new := tmp[20:40]
@@ -229,6 +237,7 @@ func ValidateLog(log []tspiconst.Log, quote [][]byte) error {
 		virt_pcrs[entry.Pcr] = sha1.Sum(tmp[:])
 	}
 
+	// And now check that the actual PCR values match the calculated ones
 	for pcr, _ := range quote {
 		if len(quote[pcr]) == 0 {
 			continue
@@ -298,11 +307,7 @@ func ValidateBinaryPCR(pcr int, log []ValidatedLog, values []PCRDescription, sou
 		if logentry.Pcr != int32(pcr) {
 			continue
 		}
-		substrs := strings.SplitAfterN(string(logentry.Event), " ", 2)
 
-		if len(substrs) == 2 {
-			prefix = substrs[0]
-		}
 		prefix = strings.Split(string(logentry.Event), " ")[0]
 		for _, config := range values {
 			if config.Prefix != "" && prefix != config.Prefix {
