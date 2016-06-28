@@ -15,7 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package admit
+package taint
 
 import (
 	"encoding/json"
@@ -216,7 +216,6 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 		if !ok {
 			return apierrors.NewBadRequest("Resource was marked with kind Node but couldn't be type converted")
 		}
-
 		if operation == admission.Create {
 			err := invalidateNode(node)
 			if err != nil {
@@ -238,7 +237,7 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 			oldTrusted, err := isTrusted(oldNode)
 			if err != nil || oldTrusted == false {
 				glog.Errorf("User %v attempted to flag untrusted node %v as trusted", user, node.Name)
-				invalidateNode(node)
+				return apierrors.NewBadRequest("Attempted to flag untrusted node as trusted")
 			}
 		}
 	case api.Kind("Pod"):
