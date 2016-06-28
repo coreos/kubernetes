@@ -215,7 +215,7 @@ func ValidateLogConsistency(log []tspiconst.Log) error {
 		if bytes.Equal(hash[:], entry.PcrValue[:]) {
 			continue
 		}
-		return fmt.Errorf("Log entry is inconsistent with claimed PCR value")
+		return fmt.Errorf("Log entry is inconsistent with claimed PCR value: %x vs %x", entry.PcrValue[:], hash[:])
 	}
 
 	return nil
@@ -244,7 +244,7 @@ func ValidateLog(log []tspiconst.Log, quote [][]byte) error {
 		}
 		if !bytes.Equal(virt_pcrs[pcr][:], quote[pcr]) {
 			glog.Errorf("Log fails to match for PCR %d", pcr)
-			glog.Errorf("%v vs %v", virt_pcrs[pcr], quote[pcr])
+			glog.Errorf("%x vs %x", virt_pcrs[pcr], quote[pcr])
 			return fmt.Errorf("Log doesn't validate")
 		}
 	}
@@ -356,8 +356,14 @@ func ValidateASCIIPCR(pcr int, log []ValidatedLog, values []PCRDescription, sour
 		if logentry.Pcr != int32(pcr) {
 			continue
 		}
-		substrs := strings.SplitAfterN(string(logentry.Event), " ", 2)
 
+		// Ensure that the event matches the hash
+		hash := sha1.Sum(logentry.Event[:])
+		if !(bytes.Equal(hash[:], logentry.PcrValue[:])) {
+			continue
+		}
+
+		substrs := strings.SplitAfterN(string(logentry.Event), " ", 2)
 		if len(substrs) == 2 {
 			prefix = strings.TrimRight(substrs[0], " ")
 			event = substrs[1]
