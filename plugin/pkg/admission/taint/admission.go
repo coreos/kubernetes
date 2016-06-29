@@ -203,7 +203,7 @@ func (t *taintAdmit) Admit(a admission.Attributes) (err error) {
 		}
 		// Only permit TPM admins to modify these, otherwise nodes can circumvent security policy
 		if name == "taint.coreos.com" || name == "tpm.coreos.com" {
-				return apierrors.NewBadRequest("Unauthorised attempt to modify taint configuration")
+			return apierrors.NewBadRequest("Unauthorised attempt to modify taint configuration")
 		}
 		return nil
 	case api.Kind("Node"):
