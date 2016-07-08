@@ -34,6 +34,7 @@ import (
 	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/sets"
+	"k8s.io/kubernetes/pkg/watch/versioned"
 )
 
 type thirdPartyObjectConverter struct {
@@ -427,6 +428,15 @@ func (t *thirdPartyResourceDataEncoder) EncodeToStream(obj runtime.Object, strea
 		return nil
 	case *unversioned.Status, *unversioned.APIResourceList:
 		return t.delegate.EncodeToStream(obj, stream, overrides...)
+	case *versioned.InternalEvent:
+		enc := json.NewEncoder(stream)
+		err := enc.Encode(obj)
+
+		if err != nil {
+			return err
+		}
+
+		return nil
 	default:
 		return fmt.Errorf("unexpected object to encode: %#v", obj)
 	}

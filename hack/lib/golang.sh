@@ -37,6 +37,7 @@ kube::golang::server_targets() {
     cmd/kubelet
     cmd/kubemark
     cmd/hyperkube
+    cmd/tpm-manager
     federation/cmd/federation-apiserver
     federation/cmd/federation-controller-manager
     plugin/cmd/kube-scheduler
