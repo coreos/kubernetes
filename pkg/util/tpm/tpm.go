@@ -28,8 +28,6 @@ type TPMHandler struct {
 	PolicyClient *dynamic.ResourceClient
 }
 
-var TPMResource string = "coreos.com"
-
 type Tpm struct {
 	// The TPM's EK certificate
 	EKCert []byte
@@ -393,7 +391,7 @@ func ValidateASCIIPCR(pcr int, log []ValidatedLog, values []PCRDescription, sour
 func ValidatePCRs(log []tspiconst.Log, quote [][]byte, pcrconfig []map[string]PCRConfig) ([]ValidatedLog, error) {
 	validatedlog := make([]ValidatedLog, len(log))
 	for index, logentry := range log {
-		validatedlog[index] = ValidatedLog{logentry, false, "", "", "", ""}
+		validatedlog[index] = ValidatedLog{Log: logentry, Valid: false}
 	}
 	for _, config := range pcrconfig {
 		for pcrname, _ := range config {

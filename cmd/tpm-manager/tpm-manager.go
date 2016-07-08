@@ -46,12 +46,14 @@ import (
 	"k8s.io/kubernetes/pkg/watch"
 )
 
-const TaintKey string = "Untrusted"
-const LogState string = "tpm.coreos.com/logstate"
-const UntrustedSince string = "tpm.coreos.com/untrustedsince"
-const TrustedSince string = "tpm.coreos.com/trustedsince"
-const ValidationTime string = "tpm.coreos.com/validationtime"
-const ConfigName string = "tpm-manager.coreos.com"
+const (
+	TaintKey       string = "Untrusted"
+	LogState       string = "tpm.coreos.com/logstate"
+	UntrustedSince string = "tpm.coreos.com/untrustedsince"
+	TrustedSince   string = "tpm.coreos.com/trustedsince"
+	ValidationTime string = "tpm.coreos.com/validationtime"
+	ConfigName     string = "tpm-manager.coreos.com"
+)
 
 // Flag a node as untrusted
 func invalidateNode(node *api.Node) error {
@@ -316,6 +318,9 @@ func updateConfig(configmap *api.ConfigMap) {
 		reverify, err := strconv.Atoi(configmap.Data["reverify"])
 		if err == nil {
 			manager.recurring = reverify
+			// Trigger the reverification logic. If it's already in the
+			// middle of reverifying, drop the event - it'll handle it
+			// at the end of reverification.
 			select {
 			case manager.recurringChan <- reverify:
 			default:
@@ -375,14 +380,12 @@ func run(stop <-chan struct{}) {
 			DeleteFunc: policyDeleteFn,
 		},
 	)
-	fmt.Printf("Starting\n")
 	loadPolicy()
 	go reverify()
 	go nodeController.Run(wait.NeverStop)
 	go configController.Run(wait.NeverStop)
 	go policyController.Run(wait.NeverStop)
 	select {}
-	fmt.Printf("Returned\n")
 }
 
 func main() {
