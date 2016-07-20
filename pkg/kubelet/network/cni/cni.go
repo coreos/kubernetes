@@ -39,11 +39,12 @@ const (
 type cniNetworkPlugin struct {
 	network.NoopNetworkPlugin
 
-	loNetwork      *cniNetwork
-	defaultNetwork *cniNetwork
-	host           network.Host
-	execer         utilexec.Interface
-	nsenterPath    string
+	vendorCNIDirPrefix string
+	loNetwork          *cniNetwork
+	defaultNetwork     *cniNetwork
+	host               network.Host
+	execer             utilexec.Interface
+	nsenterPath        string
 }
 
 type cniNetwork struct {
@@ -59,8 +60,9 @@ func probeNetworkPluginsWithVendorCNIDirPrefix(pluginDir, vendorCNIDirPrefix str
 		return configList
 	}
 	return append(configList, &cniNetworkPlugin{
-		defaultNetwork: network,
-		execer:         utilexec.New(),
+		defaultNetwork:     network,
+		vendorCNIDirPrefix: vendorCNIDirPrefix,
+		execer:             utilexec.New(),
 	})
 }
 
@@ -88,14 +90,18 @@ func getDefaultCNINetwork(pluginDir, vendorCNIDirPrefix string) (*cniNetwork, er
 			continue
 		}
 		// Search for vendor-specific plugins as well as default plugins in the CNI codebase.
-		vendorCNIDir := fmt.Sprintf(VendorCNIDirTemplate, vendorCNIDirPrefix, conf.Network.Type)
+		vendorDir := vendorCNIDir(vendorCNIDirPrefix, conf.Network.Type)
 		cninet := &libcni.CNIConfig{
-			Path: []string{DefaultCNIDir, vendorCNIDir},
+			Path: []string{DefaultCNIDir, vendorDir},
 		}
 		network := &cniNetwork{name: conf.Network.Name, NetworkConfig: conf, CNIConfig: cninet}
 		return network, nil
 	}
 	return nil, fmt.Errorf("No valid networks found in %s", pluginDir)
+}
+
+func vendorCNIDir(prefix, pluginType string) string {
+	return fmt.Sprintf(VendorCNIDirTemplate, prefix, pluginType)
 }
 
 func (plugin *cniNetworkPlugin) Init(host network.Host, hairpinMode componentconfig.HairpinMode, nonMasqueradeCIDR string) error {
@@ -114,7 +120,7 @@ func (plugin *cniNetworkPlugin) Init(host network.Host, hairpinMode componentcon
 		return err
 	}
 	cninet := &libcni.CNIConfig{
-		Path: []string{DefaultCNIDir},
+		Path: []string{DefaultCNIDir, vendorCNIDir(plugin.vendorCNIDirPrefix, loConfig.Network.Type)},
 	}
 	plugin.loNetwork = &cniNetwork{
 		name:          "lo",
