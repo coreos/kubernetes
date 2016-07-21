@@ -30,6 +30,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/testapi"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	kubectltesting "k8s.io/kubernetes/pkg/kubectl/testing"
 	"k8s.io/kubernetes/pkg/runtime"
@@ -104,7 +105,7 @@ func TestPrinter(t *testing.T) {
 		},
 	}
 	emptyListTest := &api.PodList{}
-	testapi, err := api.Scheme.ConvertToVersion(podTest, testapi.Default.GroupVersion().String())
+	testapi, err := api.Scheme.ConvertToVersion(podTest, *testapi.Default.GroupVersion())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -465,7 +466,7 @@ func TestPrinters(t *testing.T) {
 		"template2":            templatePrinter2,
 		"jsonpath":             jsonpathPrinter,
 		"name": &NamePrinter{
-			Typer:   runtime.ObjectTyperToTyper(api.Scheme),
+			Typer:   api.Scheme,
 			Decoder: api.Codecs.UniversalDecoder(),
 		},
 	}
@@ -705,7 +706,7 @@ func TestPrintHumanReadableService(t *testing.T) {
 		},
 		{
 			Spec: api.ServiceSpec{
-				ClusterIP: "1.2.3.4",
+				ClusterIP: "1.3.4.5",
 				Ports: []api.ServicePort{
 					{
 						Port:     80,
@@ -724,7 +725,7 @@ func TestPrintHumanReadableService(t *testing.T) {
 		},
 		{
 			Spec: api.ServiceSpec{
-				ClusterIP: "1.2.3.4",
+				ClusterIP: "1.4.5.6",
 				Type:      "LoadBalancer",
 				Ports: []api.ServicePort{
 					{
@@ -753,7 +754,7 @@ func TestPrintHumanReadableService(t *testing.T) {
 		},
 		{
 			Spec: api.ServiceSpec{
-				ClusterIP: "1.2.3.4",
+				ClusterIP: "1.5.6.7",
 				Type:      "LoadBalancer",
 				Ports: []api.ServicePort{
 					{
@@ -790,30 +791,33 @@ func TestPrintHumanReadableService(t *testing.T) {
 	}
 
 	for _, svc := range tests {
-		buff := bytes.Buffer{}
-		printService(&svc, &buff, PrintOptions{false, false, false, false, false, false, []string{}})
-		output := string(buff.Bytes())
-		ip := svc.Spec.ClusterIP
-		if !strings.Contains(output, ip) {
-			t.Errorf("expected to contain ClusterIP %s, but doesn't: %s", ip, output)
-		}
-
-		for _, ingress := range svc.Status.LoadBalancer.Ingress {
-			ip = ingress.IP
+		for _, wide := range []bool{false, true} {
+			buff := bytes.Buffer{}
+			printService(&svc, &buff, PrintOptions{false, false, wide, false, false, false, []string{}})
+			output := string(buff.Bytes())
+			ip := svc.Spec.ClusterIP
 			if !strings.Contains(output, ip) {
-				t.Errorf("expected to contain ingress ip %s, but doesn't: %s", ip, output)
+				t.Errorf("expected to contain ClusterIP %s, but doesn't: %s", ip, output)
 			}
-		}
 
-		for _, port := range svc.Spec.Ports {
-			portSpec := fmt.Sprintf("%d/%s", port.Port, port.Protocol)
-			if !strings.Contains(output, portSpec) {
-				t.Errorf("expected to contain port: %s, but doesn't: %s", portSpec, output)
+			for n, ingress := range svc.Status.LoadBalancer.Ingress {
+				ip = ingress.IP
+				// For non-wide output, we only guarantee the first IP to be printed
+				if (n == 0 || wide) && !strings.Contains(output, ip) {
+					t.Errorf("expected to contain ingress ip %s with wide=%v, but doesn't: %s", ip, wide, output)
+				}
 			}
-		}
-		// Each service should print on one line
-		if 1 != strings.Count(output, "\n") {
-			t.Errorf("expected a single newline, found %d", strings.Count(output, "\n"))
+
+			for _, port := range svc.Spec.Ports {
+				portSpec := fmt.Sprintf("%d/%s", port.Port, port.Protocol)
+				if !strings.Contains(output, portSpec) {
+					t.Errorf("expected to contain port: %s, but doesn't: %s", portSpec, output)
+				}
+			}
+			// Each service should print on one line
+			if 1 != strings.Count(output, "\n") {
+				t.Errorf("expected a single newline, found %d", strings.Count(output, "\n"))
+			}
 		}
 	}
 }
@@ -1341,36 +1345,36 @@ func TestPrintDaemonSet(t *testing.T) {
 }
 
 func TestPrintJob(t *testing.T) {
-	completions := 2
+	completions := int32(2)
 	tests := []struct {
-		job    extensions.Job
+		job    batch.Job
 		expect string
 	}{
 		{
-			extensions.Job{
+			batch.Job{
 				ObjectMeta: api.ObjectMeta{
 					Name:              "job1",
 					CreationTimestamp: unversioned.Time{Time: time.Now().Add(1.9e9)},
 				},
-				Spec: extensions.JobSpec{
+				Spec: batch.JobSpec{
 					Completions: &completions,
 				},
-				Status: extensions.JobStatus{
+				Status: batch.JobStatus{
 					Succeeded: 1,
 				},
 			},
 			"job1\t2\t1\t0s\n",
 		},
 		{
-			extensions.Job{
+			batch.Job{
 				ObjectMeta: api.ObjectMeta{
 					Name:              "job2",
 					CreationTimestamp: unversioned.Time{Time: time.Now().AddDate(-10, 0, 0)},
 				},
-				Spec: extensions.JobSpec{
+				Spec: batch.JobSpec{
 					Completions: nil,
 				},
-				Status: extensions.JobStatus{
+				Status: batch.JobStatus{
 					Succeeded: 0,
 				},
 			},

@@ -17,7 +17,10 @@
     - makedirs: true
     - dir_mode: 755
     - context:
-        cpurequest: '200m'
+        # Increasing to 100m to avoid CPU starvation on full nodes.
+        # Any change here should be accompanied by a proportional change in CPU
+        # requests of other per-node add-ons (e.g. fluentd).
+        cpurequest: '100m'
     - require:
       - service: docker
       - service: kubelet

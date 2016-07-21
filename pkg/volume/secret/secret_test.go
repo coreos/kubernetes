@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -29,7 +30,6 @@ import (
 	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/fake"
 	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/empty_dir"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
@@ -38,13 +38,156 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestMakePayload(t *testing.T) {
+	cases := []struct {
+		name     string
+		mappings []api.KeyToPath
+		secret   *api.Secret
+		payload  map[string][]byte
+		success  bool
+	}{
+		{
+			name: "no overrides",
+			secret: &api.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			payload: map[string][]byte{
+				"foo": []byte("foo"),
+				"bar": []byte("bar"),
+			},
+			success: true,
+		},
+		{
+			name: "basic 1",
+			mappings: []api.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "path/to/foo.txt",
+				},
+			},
+			secret: &api.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			payload: map[string][]byte{
+				"path/to/foo.txt": []byte("foo"),
+			},
+			success: true,
+		},
+		{
+			name: "subdirs",
+			mappings: []api.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "path/to/1/2/3/foo.txt",
+				},
+			},
+			secret: &api.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			payload: map[string][]byte{
+				"path/to/1/2/3/foo.txt": []byte("foo"),
+			},
+			success: true,
+		},
+		{
+			name: "subdirs 2",
+			mappings: []api.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "path/to/1/2/3/foo.txt",
+				},
+			},
+			secret: &api.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			payload: map[string][]byte{
+				"path/to/1/2/3/foo.txt": []byte("foo"),
+			},
+			success: true,
+		},
+		{
+			name: "subdirs 3",
+			mappings: []api.KeyToPath{
+				{
+					Key:  "foo",
+					Path: "path/to/1/2/3/foo.txt",
+				},
+				{
+					Key:  "bar",
+					Path: "another/path/to/the/esteemed/bar.bin",
+				},
+			},
+			secret: &api.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			payload: map[string][]byte{
+				"path/to/1/2/3/foo.txt":                []byte("foo"),
+				"another/path/to/the/esteemed/bar.bin": []byte("bar"),
+			},
+			success: true,
+		},
+		{
+			name: "non existent key",
+			mappings: []api.KeyToPath{
+				{
+					Key:  "zab",
+					Path: "path/to/foo.txt",
+				},
+			},
+			secret: &api.Secret{
+				Data: map[string][]byte{
+					"foo": []byte("foo"),
+					"bar": []byte("bar"),
+				},
+			},
+			success: false,
+		},
+	}
+
+	for _, tc := range cases {
+		actualPayload, err := makePayload(tc.mappings, tc.secret)
+		if err != nil && tc.success {
+			t.Errorf("%v: unexpected failure making payload: %v", tc.name, err)
+			continue
+		}
+
+		if err == nil && !tc.success {
+			t.Errorf("%v: unexpected success making payload", tc.name)
+			continue
+		}
+
+		if !tc.success {
+			continue
+		}
+
+		if e, a := tc.payload, actualPayload; !reflect.DeepEqual(e, a) {
+			t.Errorf("%v: expected and actual payload do not match", tc.name)
+		}
+	}
+}
+
 func newTestHost(t *testing.T, clientset clientset.Interface) (string, volume.VolumeHost) {
 	tempDir, err := ioutil.TempDir("/tmp", "secret_volume_test.")
 	if err != nil {
 		t.Fatalf("can't make a temp rootdir: %v", err)
 	}
 
-	return tempDir, volumetest.NewFakeVolumeHost(tempDir, clientset, empty_dir.ProbeVolumePlugins())
+	return tempDir, volumetest.NewFakeVolumeHost(tempDir, clientset, empty_dir.ProbeVolumePlugins(), "" /* rootContext */)
 }
 
 func TestCanSupport(t *testing.T) {
@@ -56,8 +199,8 @@ func TestCanSupport(t *testing.T) {
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	if plugin.Name() != secretPluginName {
-		t.Errorf("Wrong name: %s", plugin.Name())
+	if plugin.GetPluginName() != secretPluginName {
+		t.Errorf("Wrong name: %s", plugin.GetPluginName())
 	}
 	if !plugin.CanSupport(&volume.Spec{Volume: &api.Volume{VolumeSource: api.VolumeSource{Secret: &api.SecretVolumeSource{SecretName: ""}}}}) {
 		t.Errorf("Expected true")
@@ -89,20 +232,20 @@ func TestPlugin(t *testing.T) {
 	}
 
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: testPodUID}}
-	builder, err := plugin.NewBuilder(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
 
-	volumePath := builder.GetPath()
+	volumePath := mounter.GetPath()
 	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid/volumes/kubernetes.io~secret/test_volume_name")) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
-	err = builder.SetUp(nil)
+	err = mounter.SetUp(nil)
 	if err != nil {
 		t.Errorf("Failed to setup volume: %v", err)
 	}
@@ -128,72 +271,12 @@ func TestPlugin(t *testing.T) {
 	defer doTestCleanAndTeardown(plugin, testPodUID, testVolumeName, volumePath, t)
 
 	// Metrics only supported on linux
-	metrics, err := builder.GetMetrics()
+	metrics, err := mounter.GetMetrics()
 	if runtime.GOOS == "linux" {
 		assert.NotEmpty(t, metrics)
 		assert.NoError(t, err)
 	} else {
 		t.Skipf("Volume metrics not supported on %s", runtime.GOOS)
-	}
-}
-
-// Test the case where the 'ready' file has been created and the pod volume dir
-// is a mountpoint.  Mount should not be called.
-func TestPluginIdempotent(t *testing.T) {
-	var (
-		testPodUID     = types.UID("test_pod_uid2")
-		testVolumeName = "test_volume_name"
-		testNamespace  = "test_secret_namespace"
-		testName       = "test_secret_name"
-
-		volumeSpec    = volumeSpec(testVolumeName, testName)
-		secret        = secret(testNamespace, testName)
-		client        = fake.NewSimpleClientset(&secret)
-		pluginMgr     = volume.VolumePluginMgr{}
-		rootDir, host = newTestHost(t, client)
-	)
-
-	pluginMgr.InitPlugins(ProbeVolumePlugins(), host)
-
-	plugin, err := pluginMgr.FindPluginByName(secretPluginName)
-	if err != nil {
-		t.Errorf("Can't find the plugin by name")
-	}
-
-	podVolumeDir := fmt.Sprintf("%v/pods/test_pod_uid2/volumes/kubernetes.io~secret/test_volume_name", rootDir)
-	podMetadataDir := fmt.Sprintf("%v/pods/test_pod_uid2/plugins/kubernetes.io~secret/test_volume_name", rootDir)
-	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: testPodUID}}
-	mounter := host.GetMounter().(*mount.FakeMounter)
-	mounter.MountPoints = []mount.MountPoint{
-		{
-			Path: podVolumeDir,
-		},
-	}
-	util.SetReady(podMetadataDir)
-	builder, err := plugin.NewBuilder(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
-	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
-	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
-	}
-
-	volumePath := builder.GetPath()
-	err = builder.SetUp(nil)
-	if err != nil {
-		t.Errorf("Failed to setup volume: %v", err)
-	}
-
-	if len(mounter.Log) != 0 {
-		t.Errorf("Unexpected calls made to mounter: %v", mounter.Log)
-	}
-
-	if _, err := os.Stat(volumePath); err != nil {
-		if !os.IsNotExist(err) {
-			t.Errorf("SetUp() failed unexpectedly: %v", err)
-		}
-	} else {
-		t.Errorf("volume path should not exist: %v", volumePath)
 	}
 }
 
@@ -222,22 +305,22 @@ func TestPluginReboot(t *testing.T) {
 	}
 
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: testPodUID}}
-	builder, err := plugin.NewBuilder(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
+	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod, volume.VolumeOptions{})
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
 
 	podMetadataDir := fmt.Sprintf("%v/pods/test_pod_uid3/plugins/kubernetes.io~secret/test_volume_name", rootDir)
 	util.SetReady(podMetadataDir)
-	volumePath := builder.GetPath()
+	volumePath := mounter.GetPath()
 	if !strings.HasSuffix(volumePath, fmt.Sprintf("pods/test_pod_uid3/volumes/kubernetes.io~secret/test_volume_name")) {
 		t.Errorf("Got unexpected path: %s", volumePath)
 	}
 
-	err = builder.SetUp(nil)
+	err = mounter.SetUp(nil)
 	if err != nil {
 		t.Errorf("Failed to setup volume: %v", err)
 	}
@@ -298,15 +381,15 @@ func doTestSecretDataInVolume(volumePath string, secret api.Secret, t *testing.T
 }
 
 func doTestCleanAndTeardown(plugin volume.VolumePlugin, podUID types.UID, testVolumeName, volumePath string, t *testing.T) {
-	cleaner, err := plugin.NewCleaner(testVolumeName, podUID)
+	unmounter, err := plugin.NewUnmounter(testVolumeName, podUID)
 	if err != nil {
-		t.Errorf("Failed to make a new Cleaner: %v", err)
+		t.Errorf("Failed to make a new Unmounter: %v", err)
 	}
-	if cleaner == nil {
-		t.Errorf("Got a nil Cleaner")
+	if unmounter == nil {
+		t.Errorf("Got a nil Unmounter")
 	}
 
-	if err := cleaner.TearDown(); err != nil {
+	if err := unmounter.TearDown(); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 	if _, err := os.Stat(volumePath); err == nil {

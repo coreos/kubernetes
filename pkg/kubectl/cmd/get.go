@@ -26,6 +26,7 @@ import (
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/resource"
 	"k8s.io/kubernetes/pkg/runtime"
+	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/watch"
 )
 
@@ -33,6 +34,7 @@ import (
 // referencing the cmd.Flags()
 type GetOptions struct {
 	Filenames []string
+	Recursive bool
 }
 
 const (
@@ -73,11 +75,12 @@ func NewCmdGet(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 	options := &GetOptions{}
 
 	// retrieve a list of handled resources from printer as valid args
-	validArgs := []string{}
+	validArgs, argAliases := []string{}, []string{}
 	p, err := f.Printer(nil, false, false, false, false, false, false, []string{})
 	cmdutil.CheckErr(err)
 	if p != nil {
 		validArgs = p.HandledResources()
+		argAliases = kubectl.ResourceAliases(validArgs)
 	}
 
 	cmd := &cobra.Command{
@@ -89,7 +92,9 @@ func NewCmdGet(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 			err := RunGet(f, out, cmd, args, options)
 			cmdutil.CheckErr(err)
 		},
-		ValidArgs: validArgs,
+		SuggestFor: []string{"list", "ps"},
+		ValidArgs:  validArgs,
+		ArgAliases: argAliases,
 	}
 	cmdutil.AddPrinterFlags(cmd)
 	cmd.Flags().StringP("selector", "l", "", "Selector (label query) to filter on")
@@ -100,6 +105,8 @@ func NewCmdGet(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 	cmd.Flags().Bool("export", false, "If true, use 'export' for the resources.  Exported resources are stripped of cluster-specific information.")
 	usage := "Filename, directory, or URL to a file identifying the resource to get from a server."
 	kubectl.AddJsonFilenameFlag(cmd, &options.Filenames, usage)
+	cmdutil.AddRecursiveFlag(cmd, &options.Recursive)
+	cmdutil.AddInclude3rdPartyFlags(cmd)
 	return cmd
 }
 
@@ -108,7 +115,7 @@ func NewCmdGet(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string, options *GetOptions) error {
 	selector := cmdutil.GetFlagString(cmd, "selector")
 	allNamespaces := cmdutil.GetFlagBool(cmd, "all-namespaces")
-	mapper, typer := f.Object()
+	mapper, typer := f.Object(cmdutil.GetIncludeThirdPartyAPIs(cmd))
 
 	cmdNamespace, enforceNamespace, err := f.DefaultNamespace()
 	if err != nil {
@@ -139,7 +146,7 @@ func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string
 	if isWatch || isWatchOnly {
 		r := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 			NamespaceParam(cmdNamespace).DefaultNamespace().AllNamespaces(allNamespaces).
-			FilenameParam(enforceNamespace, options.Filenames...).
+			FilenameParam(enforceNamespace, options.Recursive, options.Filenames...).
 			SelectorParam(selector).
 			ExportParam(export).
 			ResourceTypeOrNameArgs(true, args...).
@@ -192,14 +199,21 @@ func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string
 		return nil
 	}
 
-	b := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
+	r := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 		NamespaceParam(cmdNamespace).DefaultNamespace().AllNamespaces(allNamespaces).
-		FilenameParam(enforceNamespace, options.Filenames...).
+		FilenameParam(enforceNamespace, options.Recursive, options.Filenames...).
 		SelectorParam(selector).
 		ExportParam(export).
 		ResourceTypeOrNameArgs(true, args...).
 		ContinueOnError().
-		Latest()
+		Latest().
+		Flatten().
+		Do()
+	err = r.Err()
+	if err != nil {
+		return err
+	}
+
 	printer, generic, err := cmdutil.PrinterForCommand(cmd)
 	if err != nil {
 		return err
@@ -211,11 +225,11 @@ func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string
 			return err
 		}
 
+		allErrs := []error{}
 		singular := false
-		r := b.Flatten().Do()
 		infos, err := r.IntoSingular(&singular).Infos()
 		if err != nil {
-			return err
+			allErrs = append(allErrs, err)
 		}
 
 		// the outermost object will be converted to the output-version, but inner
@@ -224,18 +238,24 @@ func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string
 		if err != nil {
 			return err
 		}
-		obj, err := resource.AsVersionedObject(infos, !singular, version.String(), f.JSONEncoder())
+
+		obj, err := resource.AsVersionedObject(infos, !singular, version, f.JSONEncoder())
 		if err != nil {
 			return err
 		}
 
-		return printer.PrintObj(obj, out)
+		if err := printer.PrintObj(obj, out); err != nil {
+			allErrs = append(allErrs, err)
+		}
+		return utilerrors.NewAggregate(allErrs)
 	}
 
-	infos, err := b.Flatten().Do().Infos()
+	allErrs := []error{}
+	infos, err := r.Infos()
 	if err != nil {
-		return err
+		allErrs = append(allErrs, err)
 	}
+
 	objs := make([]runtime.Object, len(infos))
 	for ix := range infos {
 		objs[ix] = infos[ix].Object
@@ -255,9 +275,10 @@ func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string
 		}
 
 		for ix := range infos {
-			objs[ix], err = infos[ix].Mapping.ConvertToVersion(infos[ix].Object, version.String())
+			objs[ix], err = infos[ix].Mapping.ConvertToVersion(infos[ix].Object, version)
 			if err != nil {
-				return err
+				allErrs = append(allErrs, err)
+				continue
 			}
 		}
 
@@ -286,19 +307,21 @@ func RunGet(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command, args []string
 		if printer == nil || lastMapping == nil || mapping == nil || mapping.Resource != lastMapping.Resource {
 			printer, err = f.PrinterForMapping(cmd, mapping, allNamespaces)
 			if err != nil {
-				return err
+				allErrs = append(allErrs, err)
+				continue
 			}
 			lastMapping = mapping
 		}
 		if _, found := printer.(*kubectl.HumanReadablePrinter); found {
 			if err := printer.PrintObj(original, w); err != nil {
-				return err
+				allErrs = append(allErrs, err)
 			}
 			continue
 		}
 		if err := printer.PrintObj(original, w); err != nil {
-			return err
+			allErrs = append(allErrs, err)
+			continue
 		}
 	}
-	return nil
+	return utilerrors.NewAggregate(allErrs)
 }

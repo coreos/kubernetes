@@ -37,7 +37,7 @@ func TestKubectlValidation(t *testing.T) {
 		{`{"apiVersion": "v1", "kind": "Pod"}`, false},
 
 		// The following test the experimental api.
-		// TOOD: Replace with something more robust. These may move.
+		// TODO: Replace with something more robust. These may move.
 		{`{"apiVersion": "extensions/v1beta1", "kind": "Ingress"}`, false},
 		{`{"apiVersion": "extensions/v1beta1", "kind": "Job"}`, false},
 		{`{"apiVersion": "vNotAVersion", "kind": "Job"}`, true},
@@ -46,6 +46,8 @@ func TestKubectlValidation(t *testing.T) {
 	defer components.Stop(true, true)
 	ctx := clientcmdapi.NewContext()
 	cfg := clientcmdapi.NewConfig()
+	// Enable swagger api on master.
+	components.KubeMaster.InstallSwaggerAPI()
 	cluster := clientcmdapi.NewCluster()
 	cluster.Server = components.ApiServer.URL
 	cluster.InsecureSkipTLSVerify = true
@@ -54,7 +56,7 @@ func TestKubectlValidation(t *testing.T) {
 		Context:        *ctx,
 		CurrentContext: "test",
 	}
-	cmdConfig := clientcmd.NewNonInteractiveClientConfig(*cfg, "test", &overrides)
+	cmdConfig := clientcmd.NewNonInteractiveClientConfig(*cfg, "test", &overrides, nil)
 	factory := util.NewFactory(cmdConfig)
 	schema, err := factory.Validator(true, "")
 	if err != nil {

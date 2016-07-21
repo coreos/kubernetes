@@ -51,8 +51,18 @@ func (plugin *fcPlugin) Init(host volume.VolumeHost) error {
 	return nil
 }
 
-func (plugin *fcPlugin) Name() string {
+func (plugin *fcPlugin) GetPluginName() string {
 	return fcPluginName
+}
+
+func (plugin *fcPlugin) GetVolumeName(spec *volume.Spec) (string, error) {
+	volumeSource, _, err := getVolumeSource(spec)
+	if err != nil {
+		return "", err
+	}
+
+	//  TargetWWNs are the FibreChannel target world wide names
+	return fmt.Sprintf("%v", volumeSource.TargetWWNs), nil
 }
 
 func (plugin *fcPlugin) CanSupport(spec *volume.Spec) bool {
@@ -63,6 +73,10 @@ func (plugin *fcPlugin) CanSupport(spec *volume.Spec) bool {
 	return true
 }
 
+func (plugin *fcPlugin) RequiresRemount() bool {
+	return false
+}
+
 func (plugin *fcPlugin) GetAccessModes() []api.PersistentVolumeAccessMode {
 	return []api.PersistentVolumeAccessMode{
 		api.ReadWriteOnce,
@@ -70,31 +84,26 @@ func (plugin *fcPlugin) GetAccessModes() []api.PersistentVolumeAccessMode {
 	}
 }
 
-func (plugin *fcPlugin) NewBuilder(spec *volume.Spec, pod *api.Pod, _ volume.VolumeOptions) (volume.Builder, error) {
+func (plugin *fcPlugin) NewMounter(spec *volume.Spec, pod *api.Pod, _ volume.VolumeOptions) (volume.Mounter, error) {
 	// Inject real implementations here, test through the internal function.
-	return plugin.newBuilderInternal(spec, pod.UID, &FCUtil{}, plugin.host.GetMounter())
+	return plugin.newMounterInternal(spec, pod.UID, &FCUtil{}, plugin.host.GetMounter())
 }
 
-func (plugin *fcPlugin) newBuilderInternal(spec *volume.Spec, podUID types.UID, manager diskManager, mounter mount.Interface) (volume.Builder, error) {
+func (plugin *fcPlugin) newMounterInternal(spec *volume.Spec, podUID types.UID, manager diskManager, mounter mount.Interface) (volume.Mounter, error) {
 	// fc volumes used directly in a pod have a ReadOnly flag set by the pod author.
 	// fc volumes used as a PersistentVolume gets the ReadOnly flag indirectly through the persistent-claim volume used to mount the PV
-	var readOnly bool
-	var fc *api.FCVolumeSource
-	if spec.Volume != nil && spec.Volume.FC != nil {
-		fc = spec.Volume.FC
-		readOnly = fc.ReadOnly
-	} else {
-		fc = spec.PersistentVolume.Spec.FC
-		readOnly = spec.ReadOnly
+	fc, readOnly, err := getVolumeSource(spec)
+	if err != nil {
+		return nil, err
 	}
 
 	if fc.Lun == nil {
 		return nil, fmt.Errorf("empty lun")
 	}
 
-	lun := strconv.Itoa(*fc.Lun)
+	lun := strconv.Itoa(int(*fc.Lun))
 
-	return &fcDiskBuilder{
+	return &fcDiskMounter{
 		fcDisk: &fcDisk{
 			podUID:  podUID,
 			volName: spec.Name(),
@@ -105,17 +114,17 @@ func (plugin *fcPlugin) newBuilderInternal(spec *volume.Spec, podUID types.UID, 
 			plugin:  plugin},
 		fsType:   fc.FSType,
 		readOnly: readOnly,
-		mounter:  &mount.SafeFormatAndMount{mounter, exec.New()},
+		mounter:  &mount.SafeFormatAndMount{Interface: mounter, Runner: exec.New()},
 	}, nil
 }
 
-func (plugin *fcPlugin) NewCleaner(volName string, podUID types.UID) (volume.Cleaner, error) {
+func (plugin *fcPlugin) NewUnmounter(volName string, podUID types.UID) (volume.Unmounter, error) {
 	// Inject real implementations here, test through the internal function.
-	return plugin.newCleanerInternal(volName, podUID, &FCUtil{}, plugin.host.GetMounter())
+	return plugin.newUnmounterInternal(volName, podUID, &FCUtil{}, plugin.host.GetMounter())
 }
 
-func (plugin *fcPlugin) newCleanerInternal(volName string, podUID types.UID, manager diskManager, mounter mount.Interface) (volume.Cleaner, error) {
-	return &fcDiskCleaner{
+func (plugin *fcPlugin) newUnmounterInternal(volName string, podUID types.UID, manager diskManager, mounter mount.Interface) (volume.Unmounter, error) {
+	return &fcDiskUnmounter{
 		fcDisk: &fcDisk{
 			podUID:  podUID,
 			volName: volName,
@@ -152,27 +161,27 @@ func (fc *fcDisk) GetPath() string {
 	return fc.plugin.host.GetPodVolumeDir(fc.podUID, strings.EscapeQualifiedNameForDisk(name), fc.volName)
 }
 
-type fcDiskBuilder struct {
+type fcDiskMounter struct {
 	*fcDisk
 	readOnly bool
 	fsType   string
 	mounter  *mount.SafeFormatAndMount
 }
 
-var _ volume.Builder = &fcDiskBuilder{}
+var _ volume.Mounter = &fcDiskMounter{}
 
-func (b *fcDiskBuilder) GetAttributes() volume.Attributes {
+func (b *fcDiskMounter) GetAttributes() volume.Attributes {
 	return volume.Attributes{
 		ReadOnly:        b.readOnly,
 		Managed:         !b.readOnly,
 		SupportsSELinux: true,
 	}
 }
-func (b *fcDiskBuilder) SetUp(fsGroup *int64) error {
+func (b *fcDiskMounter) SetUp(fsGroup *int64) error {
 	return b.SetUpAt(b.GetPath(), fsGroup)
 }
 
-func (b *fcDiskBuilder) SetUpAt(dir string, fsGroup *int64) error {
+func (b *fcDiskMounter) SetUpAt(dir string, fsGroup *int64) error {
 	// diskSetUp checks mountpoints and prevent repeated calls
 	err := diskSetUp(b.manager, *b, dir, b.mounter, fsGroup)
 	if err != nil {
@@ -181,19 +190,30 @@ func (b *fcDiskBuilder) SetUpAt(dir string, fsGroup *int64) error {
 	return err
 }
 
-type fcDiskCleaner struct {
+type fcDiskUnmounter struct {
 	*fcDisk
 	mounter mount.Interface
 }
 
-var _ volume.Cleaner = &fcDiskCleaner{}
+var _ volume.Unmounter = &fcDiskUnmounter{}
 
 // Unmounts the bind mount, and detaches the disk only if the disk
 // resource was the last reference to that disk on the kubelet.
-func (c *fcDiskCleaner) TearDown() error {
+func (c *fcDiskUnmounter) TearDown() error {
 	return c.TearDownAt(c.GetPath())
 }
 
-func (c *fcDiskCleaner) TearDownAt(dir string) error {
+func (c *fcDiskUnmounter) TearDownAt(dir string) error {
 	return diskTearDown(c.manager, *c, dir, c.mounter)
+}
+
+func getVolumeSource(spec *volume.Spec) (*api.FCVolumeSource, bool, error) {
+	if spec.Volume != nil && spec.Volume.FC != nil {
+		return spec.Volume.FC, spec.Volume.FC.ReadOnly, nil
+	} else if spec.PersistentVolume != nil &&
+		spec.PersistentVolume.Spec.FC != nil {
+		return spec.PersistentVolume.Spec.FC, spec.ReadOnly, nil
+	}
+
+	return nil, false, fmt.Errorf("Spec does not reference a FibreChannel volume type")
 }

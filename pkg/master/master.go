@@ -28,18 +28,37 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/api/unversioned"
+	apiv1 "k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/apimachinery/registered"
+	"k8s.io/kubernetes/pkg/apis/apps"
+	appsapi "k8s.io/kubernetes/pkg/apis/apps/v1alpha1"
 	"k8s.io/kubernetes/pkg/apis/autoscaling"
+	autoscalingapiv1 "k8s.io/kubernetes/pkg/apis/autoscaling/v1"
 	"k8s.io/kubernetes/pkg/apis/batch"
+	batchapiv1 "k8s.io/kubernetes/pkg/apis/batch/v1"
+	batchapiv2alpha1 "k8s.io/kubernetes/pkg/apis/batch/v2alpha1"
 	"k8s.io/kubernetes/pkg/apis/extensions"
+	extensionsapiv1beta1 "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/apis/policy"
+	policyapiv1alpha1 "k8s.io/kubernetes/pkg/apis/policy/v1alpha1"
+	"k8s.io/kubernetes/pkg/apis/rbac"
+	rbacapi "k8s.io/kubernetes/pkg/apis/rbac/v1alpha1"
+	rbacvalidation "k8s.io/kubernetes/pkg/apis/rbac/validation"
 	"k8s.io/kubernetes/pkg/apiserver"
 	apiservermetrics "k8s.io/kubernetes/pkg/apiserver/metrics"
 	"k8s.io/kubernetes/pkg/genericapiserver"
 	"k8s.io/kubernetes/pkg/healthz"
 	kubeletclient "k8s.io/kubernetes/pkg/kubelet/client"
 	"k8s.io/kubernetes/pkg/master/ports"
+	"k8s.io/kubernetes/pkg/registry/clusterrole"
+	clusterroleetcd "k8s.io/kubernetes/pkg/registry/clusterrole/etcd"
+	clusterrolepolicybased "k8s.io/kubernetes/pkg/registry/clusterrole/policybased"
+	"k8s.io/kubernetes/pkg/registry/clusterrolebinding"
+	clusterrolebindingetcd "k8s.io/kubernetes/pkg/registry/clusterrolebinding/etcd"
+	clusterrolebindingpolicybased "k8s.io/kubernetes/pkg/registry/clusterrolebinding/policybased"
 	"k8s.io/kubernetes/pkg/registry/componentstatus"
 	configmapetcd "k8s.io/kubernetes/pkg/registry/configmap/etcd"
 	controlleretcd "k8s.io/kubernetes/pkg/registry/controller/etcd"
@@ -54,15 +73,24 @@ import (
 	limitrangeetcd "k8s.io/kubernetes/pkg/registry/limitrange/etcd"
 	"k8s.io/kubernetes/pkg/registry/namespace"
 	namespaceetcd "k8s.io/kubernetes/pkg/registry/namespace/etcd"
+	networkpolicyetcd "k8s.io/kubernetes/pkg/registry/networkpolicy/etcd"
 	"k8s.io/kubernetes/pkg/registry/node"
 	nodeetcd "k8s.io/kubernetes/pkg/registry/node/etcd"
 	pvetcd "k8s.io/kubernetes/pkg/registry/persistentvolume/etcd"
 	pvcetcd "k8s.io/kubernetes/pkg/registry/persistentvolumeclaim/etcd"
+	petsetetcd "k8s.io/kubernetes/pkg/registry/petset/etcd"
 	podetcd "k8s.io/kubernetes/pkg/registry/pod/etcd"
+	poddisruptionbudgetetcd "k8s.io/kubernetes/pkg/registry/poddisruptionbudget/etcd"
 	pspetcd "k8s.io/kubernetes/pkg/registry/podsecuritypolicy/etcd"
 	podtemplateetcd "k8s.io/kubernetes/pkg/registry/podtemplate/etcd"
 	replicasetetcd "k8s.io/kubernetes/pkg/registry/replicaset/etcd"
 	resourcequotaetcd "k8s.io/kubernetes/pkg/registry/resourcequota/etcd"
+	"k8s.io/kubernetes/pkg/registry/role"
+	roleetcd "k8s.io/kubernetes/pkg/registry/role/etcd"
+	rolepolicybased "k8s.io/kubernetes/pkg/registry/role/policybased"
+	"k8s.io/kubernetes/pkg/registry/rolebinding"
+	rolebindingetcd "k8s.io/kubernetes/pkg/registry/rolebinding/etcd"
+	rolebindingpolicybased "k8s.io/kubernetes/pkg/registry/rolebinding/policybased"
 	secretetcd "k8s.io/kubernetes/pkg/registry/secret/etcd"
 	"k8s.io/kubernetes/pkg/registry/service"
 	etcdallocator "k8s.io/kubernetes/pkg/registry/service/allocator/etcd"
@@ -76,7 +104,6 @@ import (
 	"k8s.io/kubernetes/pkg/storage"
 	etcdmetrics "k8s.io/kubernetes/pkg/storage/etcd/metrics"
 	etcdutil "k8s.io/kubernetes/pkg/storage/etcd/util"
-	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
 
 	daemonetcd "k8s.io/kubernetes/pkg/registry/daemonset/etcd"
@@ -96,7 +123,9 @@ type Config struct {
 	EventTTL                time.Duration
 	KubeletClient           kubeletclient.KubeletClient
 	// Used to start and monitor tunneling
-	Tunneler Tunneler
+	Tunneler genericapiserver.Tunneler
+
+	disableThirdPartyControllerForTesting bool
 }
 
 // Master contains state for a Kubernetes cluster master/api server.
@@ -124,9 +153,11 @@ type Master struct {
 	thirdPartyResources map[string]thirdPartyEntry
 	// protects the map
 	thirdPartyResourcesLock sync.RWMutex
+	// Useful for reliable testing.  Shouldn't be used otherwise.
+	disableThirdPartyControllerForTesting bool
 
 	// Used to start and monitor tunneling
-	tunneler Tunneler
+	tunneler genericapiserver.Tunneler
 }
 
 // thirdPartyEntry combines objects storage and API group into one struct
@@ -155,6 +186,8 @@ func New(c *Config) (*Master, error) {
 		enableCoreControllers:   c.EnableCoreControllers,
 		deleteCollectionWorkers: c.DeleteCollectionWorkers,
 		tunneler:                c.Tunneler,
+
+		disableThirdPartyControllerForTesting: c.disableThirdPartyControllerForTesting,
 	}
 	m.InstallAPIs(c)
 
@@ -166,17 +199,24 @@ func New(c *Config) (*Master, error) {
 	return m, nil
 }
 
-func resetMetrics(w http.ResponseWriter, req *http.Request) {
-	apiservermetrics.Reset()
-	etcdmetrics.Reset()
-	io.WriteString(w, "metrics reset\n")
+var defaultMetricsHandler = prometheus.Handler().ServeHTTP
+
+// MetricsWithReset is a handler that resets metrics when DELETE is passed to the endpoint.
+func MetricsWithReset(w http.ResponseWriter, req *http.Request) {
+	if req.Method == "DELETE" {
+		apiservermetrics.Reset()
+		etcdmetrics.Reset()
+		io.WriteString(w, "metrics reset\n")
+		return
+	}
+	defaultMetricsHandler(w, req)
 }
 
 func (m *Master) InstallAPIs(c *Config) {
 	apiGroupsInfo := []genericapiserver.APIGroupInfo{}
 
 	// Install v1 unless disabled.
-	if !m.ApiGroupVersionOverrides["api/v1"].Disable {
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(apiv1.SchemeGroupVersion) {
 		// Install v1 API.
 		m.initV1ResourcesStorage(c)
 		apiGroupInfo := genericapiserver.APIGroupInfo{
@@ -207,36 +247,28 @@ func (m *Master) InstallAPIs(c *Config) {
 			Help: "The time since the last successful synchronization of the SSH tunnels for proxy requests.",
 		}, func() float64 { return float64(m.tunneler.SecondsSinceSync()) })
 	}
+	healthz.InstallHandler(m.MuxHelper, healthzChecks...)
 
-	// TODO(nikhiljindal): Refactor generic parts of support services (like /versions) to genericapiserver.
-	apiserver.InstallSupport(m.MuxHelper, m.RootWebService, healthzChecks...)
 	if c.EnableProfiling {
-		m.MuxHelper.HandleFunc("/resetMetrics", resetMetrics)
+		m.MuxHelper.HandleFunc("/metrics", MetricsWithReset)
+	} else {
+		m.MuxHelper.HandleFunc("/metrics", defaultMetricsHandler)
 	}
-
-	// Install root web services
-	m.HandlerContainer.Add(m.RootWebService)
 
 	// allGroups records all supported groups at /apis
 	allGroups := []unversioned.APIGroup{}
 
 	// Install extensions unless disabled.
-	if !m.ApiGroupVersionOverrides["extensions/v1beta1"].Disable {
-		m.thirdPartyStorage = c.StorageDestinations.APIGroups[extensions.GroupName].Default
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(extensionsapiv1beta1.SchemeGroupVersion) {
+		var err error
+		m.thirdPartyStorage, err = c.StorageFactory.New(extensions.Resource("thirdpartyresources"))
+		if err != nil {
+			glog.Fatalf("Error getting third party storage: %v", err)
+		}
 		m.thirdPartyResources = map[string]thirdPartyEntry{}
 
 		extensionResources := m.getExtensionResources(c)
 		extensionsGroupMeta := registered.GroupOrDie(extensions.GroupName)
-		// Update the preferred version as per StorageVersions in the config.
-		storageVersion, found := c.StorageVersions[extensionsGroupMeta.GroupVersion.Group]
-		if !found {
-			glog.Fatalf("Couldn't find storage version of group %v", extensionsGroupMeta.GroupVersion.Group)
-		}
-		preferedGroupVersion, err := unversioned.ParseGroupVersion(storageVersion)
-		if err != nil {
-			glog.Fatalf("Error in parsing group version %s: %v", storageVersion, err)
-		}
-		extensionsGroupMeta.GroupVersion = preferedGroupVersion
 
 		apiGroupInfo := genericapiserver.APIGroupInfo{
 			GroupMeta: *extensionsGroupMeta,
@@ -263,12 +295,12 @@ func (m *Master) InstallAPIs(c *Config) {
 	}
 
 	// Install autoscaling unless disabled.
-	if !m.ApiGroupVersionOverrides["autoscaling/v1"].Disable {
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(autoscalingapiv1.SchemeGroupVersion) {
 		autoscalingResources := m.getAutoscalingResources(c)
 		autoscalingGroupMeta := registered.GroupOrDie(autoscaling.GroupName)
 
 		// Hard code preferred group version to autoscaling/v1
-		autoscalingGroupMeta.GroupVersion = unversioned.GroupVersion{Group: "autoscaling", Version: "v1"}
+		autoscalingGroupMeta.GroupVersion = autoscalingapiv1.SchemeGroupVersion
 
 		apiGroupInfo := genericapiserver.APIGroupInfo{
 			GroupMeta: *autoscalingGroupMeta,
@@ -295,23 +327,29 @@ func (m *Master) InstallAPIs(c *Config) {
 	}
 
 	// Install batch unless disabled.
-	if !m.ApiGroupVersionOverrides["batch/v1"].Disable {
-		batchResources := m.getBatchResources(c)
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(batchapiv1.SchemeGroupVersion) ||
+		c.APIResourceConfigSource.AnyResourcesForVersionEnabled(batchapiv2alpha1.SchemeGroupVersion) {
+		batchv1Resources := m.getBatchResources(c, batchapiv1.SchemeGroupVersion)
 		batchGroupMeta := registered.GroupOrDie(batch.GroupName)
 
 		// Hard code preferred group version to batch/v1
-		batchGroupMeta.GroupVersion = unversioned.GroupVersion{Group: "batch", Version: "v1"}
+		batchGroupMeta.GroupVersion = batchapiv1.SchemeGroupVersion
 
 		apiGroupInfo := genericapiserver.APIGroupInfo{
 			GroupMeta: *batchGroupMeta,
 			VersionedResourcesStorageMap: map[string]map[string]rest.Storage{
-				"v1": batchResources,
+				"v1": batchv1Resources,
 			},
 			OptionsExternalVersion: &registered.GroupOrDie(api.GroupName).GroupVersion,
 			Scheme:                 api.Scheme,
 			ParameterCodec:         api.ParameterCodec,
 			NegotiatedSerializer:   api.Codecs,
 		}
+		if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(batchapiv2alpha1.SchemeGroupVersion) {
+			batchv2alpha1Resources := m.getBatchResources(c, batchapiv2alpha1.SchemeGroupVersion)
+			apiGroupInfo.VersionedResourcesStorageMap["v2alpha1"] = batchv2alpha1Resources
+		}
+
 		apiGroupsInfo = append(apiGroupsInfo, apiGroupInfo)
 
 		batchGVForDiscovery := unversioned.GroupVersionForDiscovery{
@@ -326,19 +364,110 @@ func (m *Master) InstallAPIs(c *Config) {
 		allGroups = append(allGroups, group)
 	}
 
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(policyapiv1alpha1.SchemeGroupVersion) {
+		policyResources := m.getPolicyResources(c)
+		policyGroupMeta := registered.GroupOrDie(policy.GroupName)
+
+		// Hard code preferred group version to policy/v1alpha1
+		policyGroupMeta.GroupVersion = policyapiv1alpha1.SchemeGroupVersion
+
+		apiGroupInfo := genericapiserver.APIGroupInfo{
+			GroupMeta: *policyGroupMeta,
+			VersionedResourcesStorageMap: map[string]map[string]rest.Storage{
+				"v1alpha1": policyResources,
+			},
+			OptionsExternalVersion: &registered.GroupOrDie(api.GroupName).GroupVersion,
+			Scheme:                 api.Scheme,
+			ParameterCodec:         api.ParameterCodec,
+			NegotiatedSerializer:   api.Codecs,
+		}
+		apiGroupsInfo = append(apiGroupsInfo, apiGroupInfo)
+
+		policyGVForDiscovery := unversioned.GroupVersionForDiscovery{
+			GroupVersion: policyGroupMeta.GroupVersion.String(),
+			Version:      policyGroupMeta.GroupVersion.Version,
+		}
+		group := unversioned.APIGroup{
+			Name:             policyGroupMeta.GroupVersion.Group,
+			Versions:         []unversioned.GroupVersionForDiscovery{policyGVForDiscovery},
+			PreferredVersion: policyGVForDiscovery,
+		}
+		allGroups = append(allGroups, group)
+
+	}
+
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(appsapi.SchemeGroupVersion) {
+		appsResources := m.getAppsResources(c)
+		appsGroupMeta := registered.GroupOrDie(apps.GroupName)
+
+		// Hard code preferred group version to apps/v1alpha1
+		appsGroupMeta.GroupVersion = appsapi.SchemeGroupVersion
+
+		apiGroupInfo := genericapiserver.APIGroupInfo{
+			GroupMeta: *appsGroupMeta,
+			VersionedResourcesStorageMap: map[string]map[string]rest.Storage{
+				"v1alpha1": appsResources,
+			},
+			OptionsExternalVersion: &registered.GroupOrDie(api.GroupName).GroupVersion,
+			Scheme:                 api.Scheme,
+			ParameterCodec:         api.ParameterCodec,
+			NegotiatedSerializer:   api.Codecs,
+		}
+		apiGroupsInfo = append(apiGroupsInfo, apiGroupInfo)
+
+		appsGVForDiscovery := unversioned.GroupVersionForDiscovery{
+			GroupVersion: appsGroupMeta.GroupVersion.String(),
+			Version:      appsGroupMeta.GroupVersion.Version,
+		}
+		group := unversioned.APIGroup{
+			Name:             appsGroupMeta.GroupVersion.Group,
+			Versions:         []unversioned.GroupVersionForDiscovery{appsGVForDiscovery},
+			PreferredVersion: appsGVForDiscovery,
+		}
+		allGroups = append(allGroups, group)
+
+	}
+
+	if c.APIResourceConfigSource.AnyResourcesForVersionEnabled(rbacapi.SchemeGroupVersion) {
+		rbacResources := m.getRBACResources(c)
+		rbacGroupMeta := registered.GroupOrDie(rbac.GroupName)
+
+		// Hard code preferred group version to rbac/v1alpha1
+		rbacGroupMeta.GroupVersion = rbacapi.SchemeGroupVersion
+
+		apiGroupInfo := genericapiserver.APIGroupInfo{
+			GroupMeta: *rbacGroupMeta,
+			VersionedResourcesStorageMap: map[string]map[string]rest.Storage{
+				"v1alpha1": rbacResources,
+			},
+			OptionsExternalVersion: &registered.GroupOrDie(api.GroupName).GroupVersion,
+			Scheme:                 api.Scheme,
+			ParameterCodec:         api.ParameterCodec,
+			NegotiatedSerializer:   api.Codecs,
+		}
+		apiGroupsInfo = append(apiGroupsInfo, apiGroupInfo)
+
+		rbacGVForDiscovery := unversioned.GroupVersionForDiscovery{
+			GroupVersion: rbacGroupMeta.GroupVersion.String(),
+			Version:      rbacGroupMeta.GroupVersion.Version,
+		}
+		group := unversioned.APIGroup{
+			Name:             rbacGroupMeta.GroupVersion.Group,
+			Versions:         []unversioned.GroupVersionForDiscovery{rbacGVForDiscovery},
+			PreferredVersion: rbacGVForDiscovery,
+		}
+		allGroups = append(allGroups, group)
+
+	}
+
 	if err := m.InstallAPIGroups(apiGroupsInfo); err != nil {
 		glog.Fatalf("Error in registering group versions: %v", err)
 	}
 }
 
 func (m *Master) initV1ResourcesStorage(c *Config) {
-	dbClient := func(resource string) storage.Interface { return c.StorageDestinations.Get("", resource) }
 	restOptions := func(resource string) generic.RESTOptions {
-		return generic.RESTOptions{
-			Storage:                 dbClient(resource),
-			Decorator:               m.StorageDecorator(),
-			DeleteCollectionWorkers: m.deleteCollectionWorkers,
-		}
+		return m.GetRESTOptionsOrDie(c, api.Resource(resource))
 	}
 
 	podTemplateStorage := podtemplateetcd.NewREST(restOptions("podTemplates"))
@@ -368,8 +497,8 @@ func (m *Master) initV1ResourcesStorage(c *Config) {
 		m.ProxyTransport,
 	)
 
-	serviceStorage, serviceStatusStorage := serviceetcd.NewREST(restOptions("services"))
-	m.serviceRegistry = service.NewRegistry(serviceStorage)
+	serviceRESTStorage, serviceStatusStorage := serviceetcd.NewREST(restOptions("services"))
+	m.serviceRegistry = service.NewRegistry(serviceRESTStorage)
 
 	var serviceClusterIPRegistry service.RangeRegistry
 	serviceClusterIPRange := m.ServiceClusterIPRange
@@ -377,9 +506,16 @@ func (m *Master) initV1ResourcesStorage(c *Config) {
 		glog.Fatalf("service clusterIPRange is nil")
 		return
 	}
+
+	serviceStorage, err := c.StorageFactory.New(api.Resource("services"))
+	if err != nil {
+		glog.Fatal(err.Error())
+	}
+
 	serviceClusterIPAllocator := ipallocator.NewAllocatorCIDRRange(serviceClusterIPRange, func(max int, rangeSpec string) allocator.Interface {
 		mem := allocator.NewAllocationMap(max, rangeSpec)
-		etcd := etcdallocator.NewEtcd(mem, "/ranges/serviceips", api.Resource("serviceipallocations"), dbClient("services"))
+		// TODO etcdallocator package to return a storage interface via the storageFactory
+		etcd := etcdallocator.NewEtcd(mem, "/ranges/serviceips", api.Resource("serviceipallocations"), serviceStorage)
 		serviceClusterIPRegistry = etcd
 		return etcd
 	})
@@ -388,7 +524,8 @@ func (m *Master) initV1ResourcesStorage(c *Config) {
 	var serviceNodePortRegistry service.RangeRegistry
 	serviceNodePortAllocator := portallocator.NewPortAllocatorCustom(m.ServiceNodePortRange, func(max int, rangeSpec string) allocator.Interface {
 		mem := allocator.NewAllocationMap(max, rangeSpec)
-		etcd := etcdallocator.NewEtcd(mem, "/ranges/servicenodeports", api.Resource("servicenodeportallocations"), dbClient("services"))
+		// TODO etcdallocator package to return a storage interface via the storageFactory
+		etcd := etcdallocator.NewEtcd(mem, "/ranges/servicenodeports", api.Resource("servicenodeportallocations"), serviceStorage)
 		serviceNodePortRegistry = etcd
 		return etcd
 	})
@@ -453,10 +590,12 @@ func (m *Master) NewBootstrapController() *Controller {
 	return &Controller{
 		NamespaceRegistry: m.namespaceRegistry,
 		ServiceRegistry:   m.serviceRegistry,
-		MasterCount:       m.MasterCount,
 
-		EndpointRegistry: m.endpointRegistry,
-		EndpointInterval: 10 * time.Second,
+		EndpointReconciler: NewMasterCountEndpointReconciler(m.MasterCount, m.endpointRegistry),
+		EndpointInterval:   10 * time.Second,
+
+		SystemNamespaces:         []string{api.NamespaceSystem},
+		SystemNamespacesInterval: 1 * time.Minute,
 
 		ServiceClusterIPRegistry: m.serviceClusterIPAllocator,
 		ServiceClusterIPRange:    m.ServiceClusterIPRange,
@@ -483,7 +622,7 @@ func (m *Master) getServersToValidate(c *Config) map[string]apiserver.Server {
 		"scheduler":          {Addr: "127.0.0.1", Port: ports.SchedulerPort, Path: "/healthz"},
 	}
 
-	for ix, machine := range c.StorageDestinations.Backends() {
+	for ix, machine := range c.StorageFactory.Backends() {
 		etcdUrl, err := url.Parse(machine)
 		if err != nil {
 			glog.Errorf("Failed to parse etcd url for validation: %v", err)
@@ -504,7 +643,13 @@ func (m *Master) getServersToValidate(c *Config) map[string]apiserver.Server {
 			port = 4001
 		}
 		// TODO: etcd health checking should be abstracted in the storage tier
-		serversToValidate[fmt.Sprintf("etcd-%d", ix)] = apiserver.Server{Addr: addr, Port: port, Path: "/health", Validate: etcdutil.EtcdHealthCheck}
+		serversToValidate[fmt.Sprintf("etcd-%d", ix)] = apiserver.Server{
+			Addr:        addr,
+			EnableHTTPS: etcdUrl.Scheme == "https",
+			Port:        port,
+			Path:        "/health",
+			Validate:    etcdutil.EtcdHealthCheck,
+		}
 	}
 	return serversToValidate
 }
@@ -604,7 +749,13 @@ func (m *Master) InstallThirdPartyResource(rsrc *extensions.ThirdPartyResource) 
 	if err != nil {
 		return err
 	}
-	thirdparty := m.thirdpartyapi(group, kind, rsrc.Versions[0].Name)
+	plural, _ := meta.KindToResource(unversioned.GroupVersionKind{
+		Group:   group,
+		Version: rsrc.Versions[0].Name,
+		Kind:    kind,
+	})
+
+	thirdparty := m.thirdpartyapi(group, kind, rsrc.Versions[0].Name, plural.Resource)
 	if err := thirdparty.InstallREST(m.HandlerContainer); err != nil {
 		glog.Fatalf("Unable to setup thirdparty api: %v", err)
 	}
@@ -614,23 +765,32 @@ func (m *Master) InstallThirdPartyResource(rsrc *extensions.ThirdPartyResource) 
 		Version:      rsrc.Versions[0].Name,
 	}
 	apiGroup := unversioned.APIGroup{
-		Name:     group,
-		Versions: []unversioned.GroupVersionForDiscovery{groupVersion},
+		Name:             group,
+		Versions:         []unversioned.GroupVersionForDiscovery{groupVersion},
+		PreferredVersion: groupVersion,
 	}
 	apiserver.AddGroupWebService(api.Codecs, m.HandlerContainer, path, apiGroup)
-	m.addThirdPartyResourceStorage(path, thirdparty.Storage[strings.ToLower(kind)+"s"].(*thirdpartyresourcedataetcd.REST), apiGroup)
+
+	m.addThirdPartyResourceStorage(path, thirdparty.Storage[plural.Resource].(*thirdpartyresourcedataetcd.REST), apiGroup)
 	apiserver.InstallServiceErrorHandler(api.Codecs, m.HandlerContainer, m.NewRequestInfoResolver(), []string{thirdparty.GroupVersion.String()})
 	return nil
 }
 
-func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupVersion {
+func (m *Master) thirdpartyapi(group, kind, version, pluralResource string) *apiserver.APIGroupVersion {
 	resourceStorage := thirdpartyresourcedataetcd.NewREST(
-		generic.RESTOptions{m.thirdPartyStorage, generic.UndecoratedStorage, m.deleteCollectionWorkers}, group, kind)
+		generic.RESTOptions{
+			Storage:                 m.thirdPartyStorage,
+			Decorator:               generic.UndecoratedStorage,
+			DeleteCollectionWorkers: m.deleteCollectionWorkers,
+		},
+		group,
+		kind,
+	)
 
 	apiRoot := makeThirdPartyPath("")
 
 	storage := map[string]rest.Storage{
-		strings.ToLower(kind) + "s": resourceStorage,
+		pluralResource: resourceStorage,
 	}
 
 	optionsExternalVersion := registered.GroupOrDie(api.GroupName).GroupVersion
@@ -644,6 +804,7 @@ func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupV
 
 		Creater:   thirdpartyresourcedata.NewObjectCreator(group, version, api.Scheme),
 		Convertor: api.Scheme,
+		Copier:    api.Scheme,
 		Typer:     api.Scheme,
 
 		Mapper:                 thirdpartyresourcedata.NewMapper(registered.GroupOrDie(extensions.GroupName).RESTMapper, kind, version, group),
@@ -660,157 +821,181 @@ func (m *Master) thirdpartyapi(group, kind, version string) *apiserver.APIGroupV
 	}
 }
 
+func (m *Master) GetRESTOptionsOrDie(c *Config, resource unversioned.GroupResource) generic.RESTOptions {
+	storage, err := c.StorageFactory.New(resource)
+	if err != nil {
+		glog.Fatalf("Unable to find storage destination for %v, due to %v", resource, err.Error())
+	}
+
+	return generic.RESTOptions{
+		Storage:                 storage,
+		Decorator:               m.StorageDecorator(),
+		DeleteCollectionWorkers: m.deleteCollectionWorkers,
+	}
+}
+
 // getExperimentalResources returns the resources for extensions api
 func (m *Master) getExtensionResources(c *Config) map[string]rest.Storage {
-	// All resources except these are disabled by default.
-	enabledResources := sets.NewString("daemonsets", "deployments", "horizontalpodautoscalers", "ingresses", "jobs", "replicasets")
-	resourceOverrides := m.ApiGroupVersionOverrides["extensions/v1beta1"].ResourceOverrides
-	isEnabled := func(resource string) bool {
-		// Check if the resource has been overriden.
-		enabled, ok := resourceOverrides[resource]
-		if !ok {
-			return enabledResources.Has(resource)
-		}
-		return enabled
-	}
 	restOptions := func(resource string) generic.RESTOptions {
-		return generic.RESTOptions{
-			Storage:                 c.StorageDestinations.Get(extensions.GroupName, resource),
-			Decorator:               m.StorageDecorator(),
-			DeleteCollectionWorkers: m.deleteCollectionWorkers,
-		}
+		return m.GetRESTOptionsOrDie(c, extensions.Resource(resource))
 	}
+
+	// TODO update when we support more than one version of this group
+	version := extensionsapiv1beta1.SchemeGroupVersion
 
 	storage := map[string]rest.Storage{}
 
-	if isEnabled("horizontalpodautoscalers") {
-		m.constructHPAResources(c, storage)
-		controllerStorage := expcontrolleretcd.NewStorage(
-			generic.RESTOptions{c.StorageDestinations.Get("", "replicationControllers"), m.StorageDecorator(), m.deleteCollectionWorkers})
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("horizontalpodautoscalers")) {
+		hpaStorage, hpaStatusStorage := horizontalpodautoscaleretcd.NewREST(restOptions("horizontalpodautoscalers"))
+		storage["horizontalpodautoscalers"] = hpaStorage
+		storage["horizontalpodautoscalers/status"] = hpaStatusStorage
+
+		controllerStorage := expcontrolleretcd.NewStorage(m.GetRESTOptionsOrDie(c, api.Resource("replicationControllers")))
 		storage["replicationcontrollers"] = controllerStorage.ReplicationController
 		storage["replicationcontrollers/scale"] = controllerStorage.Scale
 	}
-	if isEnabled("thirdpartyresources") {
-		thirdPartyResourceStorage := thirdpartyresourceetcd.NewREST(restOptions("thirdpartyresources"))
+	thirdPartyResourceStorage := thirdpartyresourceetcd.NewREST(restOptions("thirdpartyresources"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("thirdpartyresources")) {
 		thirdPartyControl := ThirdPartyController{
 			master: m,
 			thirdPartyResourceRegistry: thirdPartyResourceStorage,
 		}
-		go func() {
-			wait.Forever(func() {
+		if !m.disableThirdPartyControllerForTesting {
+			go wait.Forever(func() {
 				if err := thirdPartyControl.SyncResources(); err != nil {
 					glog.Warningf("third party resource sync failed: %v", err)
 				}
 			}, 10*time.Second)
-		}()
-
+		}
 		storage["thirdpartyresources"] = thirdPartyResourceStorage
 	}
 
-	if isEnabled("daemonsets") {
-		daemonSetStorage, daemonSetStatusStorage := daemonetcd.NewREST(restOptions("daemonsets"))
+	daemonSetStorage, daemonSetStatusStorage := daemonetcd.NewREST(restOptions("daemonsets"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("daemonsets")) {
 		storage["daemonsets"] = daemonSetStorage
 		storage["daemonsets/status"] = daemonSetStatusStorage
 	}
-	if isEnabled("deployments") {
-		deploymentStorage := deploymentetcd.NewStorage(restOptions("deployments"))
+	deploymentStorage := deploymentetcd.NewStorage(restOptions("deployments"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("deployments")) {
 		storage["deployments"] = deploymentStorage.Deployment
 		storage["deployments/status"] = deploymentStorage.Status
 		storage["deployments/rollback"] = deploymentStorage.Rollback
 		storage["deployments/scale"] = deploymentStorage.Scale
 	}
-	if isEnabled("jobs") {
-		m.constructJobResources(c, storage)
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("jobs")) {
+		jobsStorage, jobsStatusStorage := jobetcd.NewREST(restOptions("jobs"))
+		storage["jobs"] = jobsStorage
+		storage["jobs/status"] = jobsStatusStorage
 	}
-	if isEnabled("ingresses") {
-		ingressStorage, ingressStatusStorage := ingressetcd.NewREST(restOptions("ingresses"))
+	ingressStorage, ingressStatusStorage := ingressetcd.NewREST(restOptions("ingresses"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("ingresses")) {
 		storage["ingresses"] = ingressStorage
 		storage["ingresses/status"] = ingressStatusStorage
 	}
-	if isEnabled("podsecuritypolicy") {
-		podSecurityPolicyStorage := pspetcd.NewREST(restOptions("podsecuritypolicy"))
+	podSecurityPolicyStorage := pspetcd.NewREST(restOptions("podsecuritypolicy"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("podsecuritypolicy")) {
 		storage["podSecurityPolicies"] = podSecurityPolicyStorage
 	}
-	if isEnabled("replicasets") {
-		replicaSetStorage := replicasetetcd.NewStorage(restOptions("replicasets"))
+	replicaSetStorage := replicasetetcd.NewStorage(restOptions("replicasets"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("replicasets")) {
 		storage["replicasets"] = replicaSetStorage.ReplicaSet
 		storage["replicasets/status"] = replicaSetStorage.Status
 		storage["replicasets/scale"] = replicaSetStorage.Scale
 	}
+	networkPolicyStorage := networkpolicyetcd.NewREST(restOptions("networkpolicies"))
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("networkpolicies")) {
+		storage["networkpolicies"] = networkPolicyStorage
+	}
 
 	return storage
-}
-
-// constructHPAResources makes HPA resources and adds them to the storage map.
-// They're installed in both autoscaling and extensions. It's assumed that
-// you've already done the check that they should be on.
-func (m *Master) constructHPAResources(c *Config, restStorage map[string]rest.Storage) {
-	// Note that hpa's storage settings are changed by changing the autoscaling
-	// group. Clearly we want all hpas to be stored in the same place no
-	// matter where they're accessed from.
-	restOptions := func(resource string) generic.RESTOptions {
-		return generic.RESTOptions{
-			Storage:                 c.StorageDestinations.Search([]string{autoscaling.GroupName, extensions.GroupName}, resource),
-			Decorator:               m.StorageDecorator(),
-			DeleteCollectionWorkers: m.deleteCollectionWorkers,
-		}
-	}
-	autoscalerStorage, autoscalerStatusStorage := horizontalpodautoscaleretcd.NewREST(restOptions("horizontalpodautoscalers"))
-	restStorage["horizontalpodautoscalers"] = autoscalerStorage
-	restStorage["horizontalpodautoscalers/status"] = autoscalerStatusStorage
 }
 
 // getAutoscalingResources returns the resources for autoscaling api
 func (m *Master) getAutoscalingResources(c *Config) map[string]rest.Storage {
-	resourceOverrides := m.ApiGroupVersionOverrides["autoscaling/v1"].ResourceOverrides
-	isEnabled := func(resource string) bool {
-		// Check if the resource has been overriden.
-		if enabled, ok := resourceOverrides[resource]; ok {
-			return enabled
-		}
-		return !m.ApiGroupVersionOverrides["autoscaling/v1"].Disable
-	}
+	// TODO update when we support more than one version of this group
+	version := autoscalingapiv1.SchemeGroupVersion
 
 	storage := map[string]rest.Storage{}
-	if isEnabled("horizontalpodautoscalers") {
-		m.constructHPAResources(c, storage)
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("horizontalpodautoscalers")) {
+		hpaStorage, hpaStatusStorage := horizontalpodautoscaleretcd.NewREST(m.GetRESTOptionsOrDie(c, autoscaling.Resource("horizontalpodautoscalers")))
+		storage["horizontalpodautoscalers"] = hpaStorage
+		storage["horizontalpodautoscalers/status"] = hpaStatusStorage
 	}
 	return storage
 }
 
-// constructJobResources makes Job resources and adds them to the storage map.
-// They're installed in both batch and extensions. It's assumed that you've
-// already done the check that they should be on.
-func (m *Master) constructJobResources(c *Config, restStorage map[string]rest.Storage) {
-	// Note that job's storage settings are changed by changing the batch
-	// group. Clearly we want all jobs to be stored in the same place no
-	// matter where they're accessed from.
-	restOptions := func(resource string) generic.RESTOptions {
-		return generic.RESTOptions{
-			Storage:                 c.StorageDestinations.Search([]string{batch.GroupName, extensions.GroupName}, resource),
-			Decorator:               m.StorageDecorator(),
-			DeleteCollectionWorkers: m.deleteCollectionWorkers,
-		}
+// getBatchResources returns the resources for batch api
+func (m *Master) getBatchResources(c *Config, version unversioned.GroupVersion) map[string]rest.Storage {
+	storage := map[string]rest.Storage{}
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("jobs")) {
+		jobsStorage, jobsStatusStorage := jobetcd.NewREST(m.GetRESTOptionsOrDie(c, batch.Resource("jobs")))
+		storage["jobs"] = jobsStorage
+		storage["jobs/status"] = jobsStatusStorage
 	}
-	jobStorage, jobStatusStorage := jobetcd.NewREST(restOptions("jobs"))
-	restStorage["jobs"] = jobStorage
-	restStorage["jobs/status"] = jobStatusStorage
+	return storage
 }
 
-// getBatchResources returns the resources for batch api
-func (m *Master) getBatchResources(c *Config) map[string]rest.Storage {
-	resourceOverrides := m.ApiGroupVersionOverrides["batch/v1"].ResourceOverrides
-	isEnabled := func(resource string) bool {
-		// Check if the resource has been overriden.
-		if enabled, ok := resourceOverrides[resource]; ok {
-			return enabled
-		}
-		return !m.ApiGroupVersionOverrides["batch/v1"].Disable
+// getPolicyResources returns the resources for policy api
+func (m *Master) getPolicyResources(c *Config) map[string]rest.Storage {
+	// TODO update when we support more than one version of this group
+	version := policyapiv1alpha1.SchemeGroupVersion
+
+	storage := map[string]rest.Storage{}
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("poddisruptionbudgets")) {
+		poddisruptionbudgetStorage, poddisruptionbudgetStatusStorage := poddisruptionbudgetetcd.NewREST(m.GetRESTOptionsOrDie(c, policy.Resource("poddisruptionbudgets")))
+		storage["poddisruptionbudgets"] = poddisruptionbudgetStorage
+		storage["poddisruptionbudgets/status"] = poddisruptionbudgetStatusStorage
+	}
+	return storage
+}
+
+// getAppsResources returns the resources for apps api
+func (m *Master) getAppsResources(c *Config) map[string]rest.Storage {
+	// TODO update when we support more than one version of this group
+	version := appsapi.SchemeGroupVersion
+
+	storage := map[string]rest.Storage{}
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("petsets")) {
+		petsetStorage, petsetStatusStorage := petsetetcd.NewREST(m.GetRESTOptionsOrDie(c, apps.Resource("petsets")))
+		storage["petsets"] = petsetStorage
+		storage["petsets/status"] = petsetStatusStorage
+	}
+	return storage
+}
+
+func (m *Master) getRBACResources(c *Config) map[string]rest.Storage {
+	version := rbacapi.SchemeGroupVersion
+
+	once := new(sync.Once)
+	var authorizationRuleResolver rbacvalidation.AuthorizationRuleResolver
+	newRuleValidator := func() rbacvalidation.AuthorizationRuleResolver {
+		once.Do(func() {
+			authorizationRuleResolver = rbacvalidation.NewDefaultRuleResolver(
+				role.NewRegistry(roleetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("roles")))),
+				rolebinding.NewRegistry(rolebindingetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("rolebindings")))),
+				clusterrole.NewRegistry(clusterroleetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("clusterroles")))),
+				clusterrolebinding.NewRegistry(clusterrolebindingetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("clusterrolebindings")))),
+			)
+		})
+		return authorizationRuleResolver
 	}
 
 	storage := map[string]rest.Storage{}
-	if isEnabled("jobs") {
-		m.constructJobResources(c, storage)
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("roles")) {
+		rolesStorage := roleetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("roles")))
+		storage["roles"] = rolepolicybased.NewStorage(rolesStorage, newRuleValidator(), c.AuthorizerRBACSuperUser)
+	}
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("rolebindings")) {
+		roleBindingsStorage := rolebindingetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("rolebindings")))
+		storage["rolebindings"] = rolebindingpolicybased.NewStorage(roleBindingsStorage, newRuleValidator(), c.AuthorizerRBACSuperUser)
+	}
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("clusterroles")) {
+		clusterRolesStorage := clusterroleetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("clusterroles")))
+		storage["clusterroles"] = clusterrolepolicybased.NewStorage(clusterRolesStorage, newRuleValidator(), c.AuthorizerRBACSuperUser)
+	}
+	if c.APIResourceConfigSource.ResourceEnabled(version.WithResource("clusterrolebindings")) {
+		clusterRoleBindingsStorage := clusterrolebindingetcd.NewREST(m.GetRESTOptionsOrDie(c, rbac.Resource("clusterrolebindings")))
+		storage["clusterrolebindings"] = clusterrolebindingpolicybased.NewStorage(clusterRoleBindingsStorage, newRuleValidator(), c.AuthorizerRBACSuperUser)
 	}
 	return storage
 }
@@ -863,4 +1048,22 @@ func (m *Master) IsTunnelSyncHealthy(req *http.Request) error {
 		return fmt.Errorf("SSHKey sync is taking to long: %d", sshKeyLag)
 	}
 	return nil
+}
+
+func DefaultAPIResourceConfigSource() *genericapiserver.ResourceConfig {
+	ret := genericapiserver.NewResourceConfig()
+	ret.EnableVersions(apiv1.SchemeGroupVersion, extensionsapiv1beta1.SchemeGroupVersion, batchapiv1.SchemeGroupVersion, autoscalingapiv1.SchemeGroupVersion, appsapi.SchemeGroupVersion, policyapiv1alpha1.SchemeGroupVersion, rbacapi.SchemeGroupVersion)
+
+	// all extensions resources except these are disabled by default
+	ret.EnableResources(
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("daemonsets"),
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("deployments"),
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("horizontalpodautoscalers"),
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("ingresses"),
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("jobs"),
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("replicasets"),
+		extensionsapiv1beta1.SchemeGroupVersion.WithResource("thirdpartyresources"),
+	)
+
+	return ret
 }

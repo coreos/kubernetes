@@ -21,12 +21,13 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
-var _ = KubeDescribe("Secrets", func() {
-	f := NewDefaultFramework("secrets")
+var _ = framework.KubeDescribe("Secrets", func() {
+	f := framework.NewDefaultFramework("secrets")
 
 	It("should be consumable from pods in volume [Conformance]", func() {
 		name := "secret-test-" + string(util.NewUUID())
@@ -49,12 +50,12 @@ var _ = KubeDescribe("Secrets", func() {
 		defer func() {
 			By("Cleaning up the secret")
 			if err := f.Client.Secrets(f.Namespace.Name).Delete(secret.Name); err != nil {
-				Failf("unable to delete secret %v: %v", secret.Name, err)
+				framework.Failf("unable to delete secret %v: %v", secret.Name, err)
 			}
 		}()
 		var err error
 		if secret, err = f.Client.Secrets(f.Namespace.Name).Create(secret); err != nil {
-			Failf("unable to create test secret %s: %v", secret.Name, err)
+			framework.Failf("unable to create test secret %s: %v", secret.Name, err)
 		}
 
 		pod := &api.Pod{
@@ -75,7 +76,7 @@ var _ = KubeDescribe("Secrets", func() {
 				Containers: []api.Container{
 					{
 						Name:  "secret-volume-test",
-						Image: "gcr.io/google_containers/mounttest:0.2",
+						Image: "gcr.io/google_containers/mounttest:0.7",
 						Args: []string{
 							"--file_content=/etc/secret-volume/data-1",
 							"--file_mode=/etc/secret-volume/data-1"},
@@ -92,9 +93,9 @@ var _ = KubeDescribe("Secrets", func() {
 			},
 		}
 
-		testContainerOutput("consume secrets", f.Client, pod, 0, []string{
+		framework.TestContainerOutput("consume secrets", f.Client, pod, 0, []string{
 			"content of file \"/etc/secret-volume/data-1\": value-1",
-			"mode of file \"/etc/secret-volume/data-1\": -r--r--r--",
+			"mode of file \"/etc/secret-volume/data-1\": -rw-r--r--",
 		}, f.Namespace.Name)
 	})
 
@@ -115,12 +116,12 @@ var _ = KubeDescribe("Secrets", func() {
 		defer func() {
 			By("Cleaning up the secret")
 			if err := f.Client.Secrets(f.Namespace.Name).Delete(secret.Name); err != nil {
-				Failf("unable to delete secret %v: %v", secret.Name, err)
+				framework.Failf("unable to delete secret %v: %v", secret.Name, err)
 			}
 		}()
 		var err error
 		if secret, err = f.Client.Secrets(f.Namespace.Name).Create(secret); err != nil {
-			Failf("unable to create test secret %s: %v", secret.Name, err)
+			framework.Failf("unable to create test secret %s: %v", secret.Name, err)
 		}
 
 		pod := &api.Pod{
@@ -152,7 +153,7 @@ var _ = KubeDescribe("Secrets", func() {
 			},
 		}
 
-		testContainerOutput("consume secrets", f.Client, pod, 0, []string{
+		framework.TestContainerOutput("consume secrets", f.Client, pod, 0, []string{
 			"SECRET_DATA=value-1",
 		}, f.Namespace.Name)
 	})

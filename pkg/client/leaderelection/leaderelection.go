@@ -250,6 +250,7 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 	e, err := le.config.Client.Endpoints(le.config.EndpointsMeta.Namespace).Get(le.config.EndpointsMeta.Name)
 	if err != nil {
 		if !errors.IsNotFound(err) {
+			glog.Errorf("error retrieving endpoint: %v", err)
 			return false
 		}
 
@@ -335,9 +336,9 @@ func (l *LeaderElector) maybeReportTransition() {
 func DefaultLeaderElectionConfiguration() componentconfig.LeaderElectionConfiguration {
 	return componentconfig.LeaderElectionConfiguration{
 		LeaderElect:   false,
-		LeaseDuration: unversioned.Duration{DefaultLeaseDuration},
-		RenewDeadline: unversioned.Duration{DefaultRenewDeadline},
-		RetryPeriod:   unversioned.Duration{DefaultRetryPeriod},
+		LeaseDuration: unversioned.Duration{Duration: DefaultLeaseDuration},
+		RenewDeadline: unversioned.Duration{Duration: DefaultRenewDeadline},
+		RetryPeriod:   unversioned.Duration{Duration: DefaultRetryPeriod},
 	}
 }
 

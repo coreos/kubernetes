@@ -18,7 +18,6 @@ package scheduler
 
 import (
 	"fmt"
-	"math/rand"
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api"
@@ -73,7 +72,7 @@ func machine1PrioritizerExtender(pod *api.Pod, nodes *api.NodeList) (*schedulera
 		if node.Name == "machine1" {
 			score = 10
 		}
-		result = append(result, schedulerapi.HostPriority{node.Name, score})
+		result = append(result, schedulerapi.HostPriority{Host: node.Name, Score: score})
 	}
 	return &result, nil
 }
@@ -85,7 +84,7 @@ func machine2PrioritizerExtender(pod *api.Pod, nodes *api.NodeList) (*schedulera
 		if node.Name == "machine2" {
 			score = 10
 		}
-		result = append(result, schedulerapi.HostPriority{node.Name, score})
+		result = append(result, schedulerapi.HostPriority{Host: node.Name, Score: score})
 	}
 	return &result, nil
 }
@@ -102,7 +101,7 @@ func machine2Prioritizer(_ *api.Pod, nodeNameToInfo map[string]*schedulercache.N
 		if node.Name == "machine2" {
 			score = 10
 		}
-		result = append(result, schedulerapi.HostPriority{node.Name, score})
+		result = append(result, schedulerapi.HostPriority{Host: node.Name, Score: score})
 	}
 	return result, nil
 }
@@ -281,12 +280,11 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		random := rand.New(rand.NewSource(0))
 		extenders := []algorithm.SchedulerExtender{}
 		for ii := range test.extenders {
 			extenders = append(extenders, &test.extenders[ii])
 		}
-		scheduler := NewGenericScheduler(schedulertesting.PodsToCache(test.pods), test.predicates, test.prioritizers, extenders, random)
+		scheduler := NewGenericScheduler(schedulertesting.PodsToCache(test.pods), test.predicates, test.prioritizers, extenders)
 		machine, err := scheduler.Schedule(test.pod, algorithm.FakeNodeLister(makeNodeList(test.nodes)))
 		if test.expectsErr {
 			if err == nil {

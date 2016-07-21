@@ -49,12 +49,25 @@ func (plugin *cephfsPlugin) Init(host volume.VolumeHost) error {
 	return nil
 }
 
-func (plugin *cephfsPlugin) Name() string {
+func (plugin *cephfsPlugin) GetPluginName() string {
 	return cephfsPluginName
+}
+
+func (plugin *cephfsPlugin) GetVolumeName(spec *volume.Spec) (string, error) {
+	volumeSource, _, err := getVolumeSource(spec)
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%v", volumeSource.Monitors), nil
 }
 
 func (plugin *cephfsPlugin) CanSupport(spec *volume.Spec) bool {
 	return (spec.Volume != nil && spec.Volume.CephFS != nil) || (spec.PersistentVolume != nil && spec.PersistentVolume.Spec.CephFS != nil)
+}
+
+func (plugin *cephfsPlugin) RequiresRemount() bool {
+	return false
 }
 
 func (plugin *cephfsPlugin) GetAccessModes() []api.PersistentVolumeAccessMode {
@@ -65,8 +78,11 @@ func (plugin *cephfsPlugin) GetAccessModes() []api.PersistentVolumeAccessMode {
 	}
 }
 
-func (plugin *cephfsPlugin) NewBuilder(spec *volume.Spec, pod *api.Pod, _ volume.VolumeOptions) (volume.Builder, error) {
-	cephvs := plugin.getVolumeSource(spec)
+func (plugin *cephfsPlugin) NewMounter(spec *volume.Spec, pod *api.Pod, _ volume.VolumeOptions) (volume.Mounter, error) {
+	cephvs, _, err := getVolumeSource(spec)
+	if err != nil {
+		return nil, err
+	}
 	secret := ""
 	if cephvs.SecretRef != nil {
 		kubeClient := plugin.host.GetKubeClient()
@@ -84,11 +100,15 @@ func (plugin *cephfsPlugin) NewBuilder(spec *volume.Spec, pod *api.Pod, _ volume
 			glog.V(1).Infof("found ceph secret info: %s", name)
 		}
 	}
-	return plugin.newBuilderInternal(spec, pod.UID, plugin.host.GetMounter(), secret)
+	return plugin.newMounterInternal(spec, pod.UID, plugin.host.GetMounter(), secret)
 }
 
-func (plugin *cephfsPlugin) newBuilderInternal(spec *volume.Spec, podUID types.UID, mounter mount.Interface, secret string) (volume.Builder, error) {
-	cephvs := plugin.getVolumeSource(spec)
+func (plugin *cephfsPlugin) newMounterInternal(spec *volume.Spec, podUID types.UID, mounter mount.Interface, secret string) (volume.Mounter, error) {
+	cephvs, _, err := getVolumeSource(spec)
+	if err != nil {
+		return nil, err
+	}
+
 	id := cephvs.User
 	if id == "" {
 		id = "admin"
@@ -105,7 +125,7 @@ func (plugin *cephfsPlugin) newBuilderInternal(spec *volume.Spec, podUID types.U
 		secret_file = "/etc/ceph/" + id + ".secret"
 	}
 
-	return &cephfsBuilder{
+	return &cephfsMounter{
 		cephfs: &cephfs{
 			podUID:      podUID,
 			volName:     spec.Name(),
@@ -120,26 +140,18 @@ func (plugin *cephfsPlugin) newBuilderInternal(spec *volume.Spec, podUID types.U
 	}, nil
 }
 
-func (plugin *cephfsPlugin) NewCleaner(volName string, podUID types.UID) (volume.Cleaner, error) {
-	return plugin.newCleanerInternal(volName, podUID, plugin.host.GetMounter())
+func (plugin *cephfsPlugin) NewUnmounter(volName string, podUID types.UID) (volume.Unmounter, error) {
+	return plugin.newUnmounterInternal(volName, podUID, plugin.host.GetMounter())
 }
 
-func (plugin *cephfsPlugin) newCleanerInternal(volName string, podUID types.UID, mounter mount.Interface) (volume.Cleaner, error) {
-	return &cephfsCleaner{
+func (plugin *cephfsPlugin) newUnmounterInternal(volName string, podUID types.UID, mounter mount.Interface) (volume.Unmounter, error) {
+	return &cephfsUnmounter{
 		cephfs: &cephfs{
 			podUID:  podUID,
 			volName: volName,
 			mounter: mounter,
 			plugin:  plugin},
 	}, nil
-}
-
-func (plugin *cephfsPlugin) getVolumeSource(spec *volume.Spec) *api.CephFSVolumeSource {
-	if spec.Volume != nil && spec.Volume.CephFS != nil {
-		return spec.Volume.CephFS
-	} else {
-		return spec.PersistentVolume.Spec.CephFS
-	}
 }
 
 // CephFS volumes represent a bare host file or directory mount of an CephFS export.
@@ -157,13 +169,13 @@ type cephfs struct {
 	volume.MetricsNil
 }
 
-type cephfsBuilder struct {
+type cephfsMounter struct {
 	*cephfs
 }
 
-var _ volume.Builder = &cephfsBuilder{}
+var _ volume.Mounter = &cephfsMounter{}
 
-func (cephfsVolume *cephfsBuilder) GetAttributes() volume.Attributes {
+func (cephfsVolume *cephfsMounter) GetAttributes() volume.Attributes {
 	return volume.Attributes{
 		ReadOnly:        cephfsVolume.readonly,
 		Managed:         false,
@@ -172,12 +184,12 @@ func (cephfsVolume *cephfsBuilder) GetAttributes() volume.Attributes {
 }
 
 // SetUp attaches the disk and bind mounts to the volume path.
-func (cephfsVolume *cephfsBuilder) SetUp(fsGroup *int64) error {
+func (cephfsVolume *cephfsMounter) SetUp(fsGroup *int64) error {
 	return cephfsVolume.SetUpAt(cephfsVolume.GetPath(), fsGroup)
 }
 
 // SetUpAt attaches the disk and bind mounts to the volume path.
-func (cephfsVolume *cephfsBuilder) SetUpAt(dir string, fsGroup *int64) error {
+func (cephfsVolume *cephfsMounter) SetUpAt(dir string, fsGroup *int64) error {
 	notMnt, err := cephfsVolume.mounter.IsLikelyNotMountPoint(dir)
 	glog.V(4).Infof("CephFS mount set up: %s %v %v", dir, !notMnt, err)
 	if err != nil && !os.IsNotExist(err) {
@@ -199,19 +211,19 @@ func (cephfsVolume *cephfsBuilder) SetUpAt(dir string, fsGroup *int64) error {
 	return err
 }
 
-type cephfsCleaner struct {
+type cephfsUnmounter struct {
 	*cephfs
 }
 
-var _ volume.Cleaner = &cephfsCleaner{}
+var _ volume.Unmounter = &cephfsUnmounter{}
 
 // TearDown unmounts the bind mount
-func (cephfsVolume *cephfsCleaner) TearDown() error {
+func (cephfsVolume *cephfsUnmounter) TearDown() error {
 	return cephfsVolume.TearDownAt(cephfsVolume.GetPath())
 }
 
 // TearDownAt unmounts the bind mount
-func (cephfsVolume *cephfsCleaner) TearDownAt(dir string) error {
+func (cephfsVolume *cephfsUnmounter) TearDownAt(dir string) error {
 	return cephfsVolume.cleanup(dir)
 }
 
@@ -278,4 +290,15 @@ func (cephfsVolume *cephfs) execMount(mountpoint string) error {
 	}
 
 	return nil
+}
+
+func getVolumeSource(spec *volume.Spec) (*api.CephFSVolumeSource, bool, error) {
+	if spec.Volume != nil && spec.Volume.CephFS != nil {
+		return spec.Volume.CephFS, spec.Volume.CephFS.ReadOnly, nil
+	} else if spec.PersistentVolume != nil &&
+		spec.PersistentVolume.Spec.CephFS != nil {
+		return spec.PersistentVolume.Spec.CephFS, spec.ReadOnly, nil
+	}
+
+	return nil, false, fmt.Errorf("Spec does not reference a CephFS volume type")
 }

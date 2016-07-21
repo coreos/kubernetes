@@ -19,10 +19,9 @@ package storage
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
-	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/meta"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/validation"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/validation/field"
@@ -48,7 +47,7 @@ func ParseWatchResourceVersion(resourceVersion string) (uint64, error) {
 	}
 	version, err := strconv.ParseUint(resourceVersion, 10, 64)
 	if err != nil {
-		return 0, errors.NewInvalid(unversioned.GroupKind{}, "", field.ErrorList{
+		return 0, NewInvalidError(field.ErrorList{
 			// Validation errors are supposed to return version-specific field
 			// paths, but this is probably close enough.
 			field.Invalid(field.NewPath("resourceVersion"), resourceVersion, err.Error()),
@@ -73,8 +72,8 @@ func NamespaceKeyFunc(prefix string, obj runtime.Object) (string, error) {
 		return "", err
 	}
 	name := meta.GetName()
-	if ok, msg := validation.IsValidPathSegmentName(name); !ok {
-		return "", fmt.Errorf("invalid name: %v", msg)
+	if msgs := validation.IsValidPathSegmentName(name); len(msgs) != 0 {
+		return "", fmt.Errorf("invalid name: %v", msgs)
 	}
 	return prefix + "/" + meta.GetNamespace() + "/" + name, nil
 }
@@ -85,8 +84,33 @@ func NoNamespaceKeyFunc(prefix string, obj runtime.Object) (string, error) {
 		return "", err
 	}
 	name := meta.GetName()
-	if ok, msg := validation.IsValidPathSegmentName(name); !ok {
-		return "", fmt.Errorf("invalid name: %v", msg)
+	if msgs := validation.IsValidPathSegmentName(name); len(msgs) != 0 {
+		return "", fmt.Errorf("invalid name: %v", msgs)
 	}
 	return prefix + "/" + name, nil
+}
+
+// hasPathPrefix returns true if the string matches pathPrefix exactly, or if is prefixed with pathPrefix at a path segment boundary
+func hasPathPrefix(s, pathPrefix string) bool {
+	// Short circuit if s doesn't contain the prefix at all
+	if !strings.HasPrefix(s, pathPrefix) {
+		return false
+	}
+
+	pathPrefixLength := len(pathPrefix)
+
+	if len(s) == pathPrefixLength {
+		// Exact match
+		return true
+	}
+	if strings.HasSuffix(pathPrefix, "/") {
+		// pathPrefix already ensured a path segment boundary
+		return true
+	}
+	if s[pathPrefixLength:pathPrefixLength+1] == "/" {
+		// The next character in s is a path segment boundary
+		// Check this instead of normalizing pathPrefix to avoid allocating on every call
+		return true
+	}
+	return false
 }

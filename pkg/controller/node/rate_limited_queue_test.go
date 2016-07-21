@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/flowcontrol"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
@@ -39,7 +39,7 @@ func CheckSetEq(lhs, rhs sets.String) bool {
 }
 
 func TestAddNode(t *testing.T) {
-	evictor := NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	evictor := NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
@@ -62,7 +62,14 @@ func TestAddNode(t *testing.T) {
 }
 
 func TestDelNode(t *testing.T) {
-	evictor := NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	defer func() { now = time.Now }()
+	var tick int64
+	now = func() time.Time {
+		t := time.Unix(tick, 0)
+		tick++
+		return t
+	}
+	evictor := NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
@@ -84,7 +91,7 @@ func TestDelNode(t *testing.T) {
 		t.Errorf("Invalid map. Got %v, expected %v", evictor.queue.set, setPattern)
 	}
 
-	evictor = NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	evictor = NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
@@ -106,7 +113,7 @@ func TestDelNode(t *testing.T) {
 		t.Errorf("Invalid map. Got %v, expected %v", evictor.queue.set, setPattern)
 	}
 
-	evictor = NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	evictor = NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
@@ -130,7 +137,7 @@ func TestDelNode(t *testing.T) {
 }
 
 func TestTry(t *testing.T) {
-	evictor := NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	evictor := NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
@@ -152,25 +159,58 @@ func TestTry(t *testing.T) {
 }
 
 func TestTryOrdering(t *testing.T) {
-	evictor := NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	defer func() { now = time.Now }()
+	current := time.Unix(0, 0)
+	delay := 0
+	// the current time is incremented by 1ms every time now is invoked
+	now = func() time.Time {
+		if delay > 0 {
+			delay--
+		} else {
+			current = current.Add(time.Millisecond)
+		}
+		t.Logf("time %d", current.UnixNano())
+		return current
+	}
+	evictor := NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
 
 	order := []string{}
 	count := 0
-	queued := false
+	hasQueued := false
 	evictor.Try(func(value TimedValue) (bool, time.Duration) {
 		count++
-		if value.AddedAt.IsZero() {
-			t.Fatalf("added should not be zero")
-		}
+		t.Logf("eviction %d", count)
 		if value.ProcessAt.IsZero() {
-			t.Fatalf("next should not be zero")
+			t.Fatalf("processAt should not be zero")
 		}
-		if !queued && value.Value == "second" {
-			queued = true
-			return false, time.Millisecond
+		switch value.Value {
+		case "first":
+			if !value.AddedAt.Equal(time.Unix(0, time.Millisecond.Nanoseconds())) {
+				t.Fatalf("added time for %s is %d", value.Value, value.AddedAt)
+			}
+
+		case "second":
+			if !value.AddedAt.Equal(time.Unix(0, 2*time.Millisecond.Nanoseconds())) {
+				t.Fatalf("added time for %s is %d", value.Value, value.AddedAt)
+			}
+			if hasQueued {
+				if !value.ProcessAt.Equal(time.Unix(0, 6*time.Millisecond.Nanoseconds())) {
+					t.Fatalf("process time for %s is %d", value.Value, value.ProcessAt)
+				}
+				break
+			}
+			hasQueued = true
+			delay = 1
+			t.Logf("going to delay")
+			return false, 2 * time.Millisecond
+
+		case "third":
+			if !value.AddedAt.Equal(time.Unix(0, 3*time.Millisecond.Nanoseconds())) {
+				t.Fatalf("added time for %s is %d", value.Value, value.AddedAt)
+			}
 		}
 		order = append(order, value.Value)
 		return true, 0
@@ -184,7 +224,7 @@ func TestTryOrdering(t *testing.T) {
 }
 
 func TestTryRemovingWhileTry(t *testing.T) {
-	evictor := NewRateLimitedTimedQueue(util.NewFakeAlwaysRateLimiter())
+	evictor := NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
 	evictor.Add("first")
 	evictor.Add("second")
 	evictor.Add("third")
@@ -226,5 +266,18 @@ func TestTryRemovingWhileTry(t *testing.T) {
 	}
 	if count != 3 {
 		t.Fatalf("unexpected iterations: %d", count)
+	}
+}
+
+func TestClear(t *testing.T) {
+	evictor := NewRateLimitedTimedQueue(flowcontrol.NewFakeAlwaysRateLimiter())
+	evictor.Add("first")
+	evictor.Add("second")
+	evictor.Add("third")
+
+	evictor.Clear()
+
+	if len(evictor.queue.queue) != 0 {
+		t.Fatalf("Clear should remove all elements from the queue.")
 	}
 }

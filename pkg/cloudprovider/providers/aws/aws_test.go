@@ -17,7 +17,6 @@ limitations under the License.
 package aws
 
 import (
-	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -31,7 +30,7 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -283,15 +282,14 @@ func instanceMatchesFilter(instance *ec2.Instance, filter *ec2.Filter) bool {
 		return contains(filter.Values, *instance.State.Name)
 	}
 
-	if name == "tag:"+TagNameKubernetesCluster {
-		for _, tag := range instance.Tags {
-			if *tag.Key == TagNameKubernetesCluster {
-				return contains(filter.Values, *tag.Value)
+	if strings.HasPrefix(name, "tag:") {
+		tagName := name[4:]
+		for _, instanceTag := range instance.Tags {
+			if aws.StringValue(instanceTag.Key) == tagName && contains(filter.Values, aws.StringValue(instanceTag.Value)) {
+				return true
 			}
 		}
-		return false
 	}
-
 	panic("Unknown filter name: " + name)
 }
 
@@ -443,18 +441,20 @@ func (s *FakeEC2) ModifyInstanceAttribute(request *ec2.ModifyInstanceAttributeIn
 
 type FakeELB struct {
 	aws *FakeAWSServices
+	mock.Mock
 }
 
 func (ec2 *FakeELB) CreateLoadBalancer(*elb.CreateLoadBalancerInput) (*elb.CreateLoadBalancerOutput, error) {
 	panic("Not implemented")
 }
 
-func (ec2 *FakeELB) DeleteLoadBalancer(*elb.DeleteLoadBalancerInput) (*elb.DeleteLoadBalancerOutput, error) {
+func (ec2 *FakeELB) DeleteLoadBalancer(input *elb.DeleteLoadBalancerInput) (*elb.DeleteLoadBalancerOutput, error) {
 	panic("Not implemented")
 }
 
-func (ec2 *FakeELB) DescribeLoadBalancers(*elb.DescribeLoadBalancersInput) (*elb.DescribeLoadBalancersOutput, error) {
-	panic("Not implemented")
+func (ec2 *FakeELB) DescribeLoadBalancers(input *elb.DescribeLoadBalancersInput) (*elb.DescribeLoadBalancersOutput, error) {
+	args := ec2.Called(input)
+	return args.Get(0).(*elb.DescribeLoadBalancersOutput), nil
 }
 func (ec2 *FakeELB) RegisterInstancesWithLoadBalancer(*elb.RegisterInstancesWithLoadBalancerInput) (*elb.RegisterInstancesWithLoadBalancerOutput, error) {
 	panic("Not implemented")
@@ -485,6 +485,14 @@ func (ec2 *FakeELB) ApplySecurityGroupsToLoadBalancer(*elb.ApplySecurityGroupsTo
 }
 
 func (elb *FakeELB) ConfigureHealthCheck(*elb.ConfigureHealthCheckInput) (*elb.ConfigureHealthCheckOutput, error) {
+	panic("Not implemented")
+}
+
+func (elb *FakeELB) CreateLoadBalancerPolicy(*elb.CreateLoadBalancerPolicyInput) (*elb.CreateLoadBalancerPolicyOutput, error) {
+	panic("Not implemented")
+}
+
+func (elb *FakeELB) SetLoadBalancerPoliciesForBackendServer(*elb.SetLoadBalancerPoliciesForBackendServerInput) (*elb.SetLoadBalancerPoliciesForBackendServerOutput, error) {
 	panic("Not implemented")
 }
 
@@ -723,44 +731,10 @@ func TestFindVPCID(t *testing.T) {
 	}
 	vpcID, err := c.findVPCID()
 	if err != nil {
-		t.Errorf("Unexpected error:", err)
+		t.Errorf("Unexpected error: %v", err)
 	}
 	if vpcID != "vpc-mac0" {
 		t.Errorf("Unexpected vpcID: %s", vpcID)
-	}
-}
-
-func TestLoadBalancerMatchesClusterRegion(t *testing.T) {
-	awsServices := NewFakeAWSServices()
-	c, err := newAWSCloud(strings.NewReader("[global]"), awsServices)
-	if err != nil {
-		t.Errorf("Error building aws cloud: %v", err)
-		return
-	}
-
-	badELBRegion := "bad-elb-region"
-	errorMessage := fmt.Sprintf("requested load balancer region '%s' does not match cluster region '%s'", badELBRegion, c.region)
-
-	_, _, err = c.GetLoadBalancer("elb-name", badELBRegion)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected GetLoadBalancer region mismatch error.")
-	}
-
-	serviceName := types.NamespacedName{Namespace: "foo", Name: "bar"}
-
-	_, err = c.EnsureLoadBalancer("elb-name", badELBRegion, nil, nil, nil, serviceName, api.ServiceAffinityNone, nil)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected EnsureLoadBalancer region mismatch error.")
-	}
-
-	err = c.EnsureLoadBalancerDeleted("elb-name", badELBRegion)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected EnsureLoadBalancerDeleted region mismatch error.")
-	}
-
-	err = c.UpdateLoadBalancer("elb-name", badELBRegion, nil)
-	if err == nil || err.Error() != errorMessage {
-		t.Errorf("Expected UpdateLoadBalancer region mismatch error.")
 	}
 }
 
@@ -1076,7 +1050,6 @@ func TestIpPermissionExistsHandlesMultipleGroupIdsWithUserIds(t *testing.T) {
 		t.Errorf("Should have not been considered equal since first is not in the second array of groups")
 	}
 }
-
 func TestFindInstanceByNodeNameExcludesTerminatedInstances(t *testing.T) {
 	awsServices := NewFakeAWSServices()
 
@@ -1120,7 +1093,7 @@ func TestFindInstanceByNodeNameExcludesTerminatedInstances(t *testing.T) {
 	}
 }
 
-func TestFindInstancesByNodeName(t *testing.T) {
+func TestFindInstancesByNodeNameCached(t *testing.T) {
 	awsServices := NewFakeAWSServices()
 
 	nodeNameOne := "my-dns.internal"
@@ -1159,8 +1132,8 @@ func TestFindInstancesByNodeName(t *testing.T) {
 		return
 	}
 
-	nodeNames := []string{nodeNameOne}
-	returnedInstances, errr := c.getInstancesByNodeNames(nodeNames)
+	nodeNames := sets.NewString(nodeNameOne)
+	returnedInstances, errr := c.getInstancesByNodeNamesCached(nodeNames)
 
 	if errr != nil {
 		t.Errorf("Failed to find instance: %v", err)
@@ -1196,4 +1169,196 @@ func TestGetVolumeLabels(t *testing.T) {
 		unversioned.LabelZoneFailureDomain: "us-east-1a",
 		unversioned.LabelZoneRegion:        "us-east-1"}, labels)
 	awsServices.ec2.AssertExpectations(t)
+}
+
+func (self *FakeELB) expectDescribeLoadBalancers(loadBalancerName string) {
+	self.On("DescribeLoadBalancers", &elb.DescribeLoadBalancersInput{LoadBalancerNames: []*string{aws.String(loadBalancerName)}}).Return(&elb.DescribeLoadBalancersOutput{
+		LoadBalancerDescriptions: []*elb.LoadBalancerDescription{{}},
+	})
+}
+
+func TestDescribeLoadBalancerOnDelete(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.EnsureLoadBalancerDeleted(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}})
+}
+
+func TestDescribeLoadBalancerOnUpdate(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.UpdateLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}}, []string{})
+}
+
+func TestDescribeLoadBalancerOnGet(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.GetLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}})
+}
+
+func TestDescribeLoadBalancerOnEnsure(t *testing.T) {
+	awsServices := NewFakeAWSServices()
+	c, _ := newAWSCloud(strings.NewReader("[global]"), awsServices)
+	awsServices.elb.expectDescribeLoadBalancers("aid")
+
+	c.EnsureLoadBalancer(&api.Service{ObjectMeta: api.ObjectMeta{Name: "myservice", UID: "id"}}, []string{})
+}
+
+func TestBuildListener(t *testing.T) {
+	tests := []struct {
+		name string
+
+		lbPort                    int64
+		portName                  string
+		instancePort              int64
+		backendProtocolAnnotation string
+		certAnnotation            string
+		sslPortAnnotation         string
+
+		expectError      bool
+		lbProtocol       string
+		instanceProtocol string
+		certID           string
+	}{
+		{
+			"No cert or BE protocol annotation, passthrough",
+			80, "", 7999, "", "", "",
+			false, "tcp", "tcp", "",
+		},
+		{
+			"Cert annotation without BE protocol specified, SSL->TCP",
+			80, "", 8000, "", "cert", "",
+			false, "ssl", "tcp", "cert",
+		},
+		{
+			"BE protocol without cert annotation, passthrough",
+			443, "", 8001, "https", "", "",
+			false, "tcp", "tcp", "",
+		},
+		{
+			"Invalid cert annotation, bogus backend protocol",
+			443, "", 8002, "bacon", "foo", "",
+			true, "tcp", "tcp", "",
+		},
+		{
+			"Invalid cert annotation, protocol followed by equal sign",
+			443, "", 8003, "http=", "=", "",
+			true, "tcp", "tcp", "",
+		},
+		{
+			"HTTPS->HTTPS",
+			443, "", 8004, "https", "cert", "",
+			false, "https", "https", "cert",
+		},
+		{
+			"HTTPS->HTTP",
+			443, "", 8005, "http", "cert", "",
+			false, "https", "http", "cert",
+		},
+		{
+			"SSL->SSL",
+			443, "", 8006, "ssl", "cert", "",
+			false, "ssl", "ssl", "cert",
+		},
+		{
+			"SSL->TCP",
+			443, "", 8007, "tcp", "cert", "",
+			false, "ssl", "tcp", "cert",
+		},
+		{
+			"Port in whitelist",
+			1234, "", 8008, "tcp", "cert", "1234,5678",
+			false, "ssl", "tcp", "cert",
+		},
+		{
+			"Port not in whitelist, passthrough",
+			443, "", 8009, "tcp", "cert", "1234,5678",
+			false, "tcp", "tcp", "",
+		},
+		{
+			"Named port in whitelist",
+			1234, "bar", 8010, "tcp", "cert", "foo,bar",
+			false, "ssl", "tcp", "cert",
+		},
+		{
+			"Named port not in whitelist, passthrough",
+			443, "", 8011, "tcp", "cert", "foo,bar",
+			false, "tcp", "tcp", "",
+		},
+	}
+
+	for _, test := range tests {
+		t.Logf("Running test case %s", test.name)
+		annotations := make(map[string]string)
+		if test.backendProtocolAnnotation != "" {
+			annotations[ServiceAnnotationLoadBalancerBEProtocol] = test.backendProtocolAnnotation
+		}
+		if test.certAnnotation != "" {
+			annotations[ServiceAnnotationLoadBalancerCertificate] = test.certAnnotation
+		}
+		ports := getPortSets(test.sslPortAnnotation)
+		l, err := buildListener(api.ServicePort{
+			NodePort: int32(test.instancePort),
+			Port:     int32(test.lbPort),
+			Name:     test.portName,
+			Protocol: api.Protocol("tcp"),
+		}, annotations, ports)
+		if test.expectError {
+			if err == nil {
+				t.Errorf("Should error for case %s", test.name)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("Should succeed for case: %s, got %v", test.name, err)
+			} else {
+				var cert *string
+				if test.certID != "" {
+					cert = &test.certID
+				}
+				expected := &elb.Listener{
+					InstancePort:     &test.instancePort,
+					InstanceProtocol: &test.instanceProtocol,
+					LoadBalancerPort: &test.lbPort,
+					Protocol:         &test.lbProtocol,
+					SSLCertificateId: cert,
+				}
+				if !reflect.DeepEqual(l, expected) {
+					t.Errorf("Incorrect listener (%v vs expected %v) for case: %s",
+						l, expected, test.name)
+				}
+			}
+		}
+	}
+}
+
+func TestProxyProtocolEnabled(t *testing.T) {
+	policies := sets.NewString(ProxyProtocolPolicyName, "FooBarFoo")
+	fakeBackend := &elb.BackendServerDescription{
+		InstancePort: aws.Int64(80),
+		PolicyNames:  stringSetToPointers(policies),
+	}
+	result := proxyProtocolEnabled(fakeBackend)
+	assert.True(t, result, "expected to find %s in %s", ProxyProtocolPolicyName, policies)
+
+	policies = sets.NewString("FooBarFoo")
+	fakeBackend = &elb.BackendServerDescription{
+		InstancePort: aws.Int64(80),
+		PolicyNames: []*string{
+			aws.String("FooBarFoo"),
+		},
+	}
+	result = proxyProtocolEnabled(fakeBackend)
+	assert.False(t, result, "did not expect to find %s in %s", ProxyProtocolPolicyName, policies)
+
+	policies = sets.NewString()
+	fakeBackend = &elb.BackendServerDescription{
+		InstancePort: aws.Int64(80),
+	}
+	result = proxyProtocolEnabled(fakeBackend)
+	assert.False(t, result, "did not expect to find %s in %s", ProxyProtocolPolicyName, policies)
 }

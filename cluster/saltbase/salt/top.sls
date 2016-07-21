@@ -17,9 +17,10 @@ base:
     - flannel
 {% elif pillar.get('network_provider', '').lower() == 'kubenet' %}
     - cni
+{% elif pillar.get('network_provider', '').lower() == 'cni' %}
+    - cni
 {% endif %}
     - helpers
-    - cadvisor
     - kube-client-tools
     - kube-node-unpacker
     - kubelet
@@ -38,6 +39,9 @@ base:
 {% if pillar.get('enable_cluster_registry', '').lower() == 'true' %}
     - kube-registry-proxy
 {% endif %}
+{% if pillar['prepull_e2e_images'] is defined and pillar['prepull_e2e_images'].lower() == 'true' %}
+    - e2e-image-puller
+{% endif %}
     - logrotate
     - supervisor
 
@@ -50,12 +54,16 @@ base:
     - flannel
 {% elif pillar.get('network_provider', '').lower() == 'kubenet' %}
     - cni
+{% elif pillar.get('network_provider', '').lower() == 'cni' %}
+    - cni
+{% endif %}
+{% if pillar.get('enable_l7_loadbalancing', '').lower() == 'glbc' %}
+    - l7-gcp
 {% endif %}
     - kube-apiserver
     - kube-controller-manager
     - kube-scheduler
     - supervisor
-    - cadvisor
     - kube-client-tools
     - kube-master-addons
     - kube-admission-controls
@@ -70,10 +78,13 @@ base:
     - logrotate
 {% endif %}
     - kube-addons
-{% if grains['cloud'] is defined and grains['cloud'] in [ 'vagrant', 'gce', 'aws', 'vsphere' ] %}
+{% if grains['cloud'] is defined and grains['cloud'] in [ 'vagrant', 'gce', 'aws', 'vsphere', 'photon-controller', 'openstack'] %}
     - docker
     - kubelet
 {% endif %}
 {% if pillar.get('network_provider', '').lower() == 'opencontrail' %}
     - opencontrail-networking-master
+{% endif %}
+{% if pillar.get('enable_cluster_autoscaler', '').lower() == 'true' %}
+    - cluster-autoscaler
 {% endif %}
