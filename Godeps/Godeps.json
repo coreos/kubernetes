@@ -542,6 +542,10 @@
 			"Comment": "v8-2-g4484981",
 			"Rev": "4484981625c1a6a2ecb40a390fcb6a9bcfee76e3"
 		},
+	        {
+			"ImportPath": "github.com/coreos/go-tspi",
+			"Rev": "03955c59fff97f9e38e7e32c68ac4db21a2aea2b"
+		},
 		{
 			"ImportPath": "github.com/coreos/pkg/capnslog",
 			"Comment": "v2",
