@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -87,8 +87,9 @@ func (tcp *tcpProxySocket) ListenPort() int {
 }
 
 func tryConnect(service proxy.ServicePortName, srcAddr net.Addr, protocol string, proxier *Proxier) (out net.Conn, err error) {
+	sessionAffinityReset := false
 	for _, dialTimeout := range endpointDialTimeout {
-		endpoint, err := proxier.loadBalancer.NextEndpoint(service, srcAddr)
+		endpoint, err := proxier.loadBalancer.NextEndpoint(service, srcAddr, sessionAffinityReset)
 		if err != nil {
 			glog.Errorf("Couldn't find an endpoint for %s: %v", service, err)
 			return nil, err
@@ -102,6 +103,7 @@ func tryConnect(service proxy.ServicePortName, srcAddr net.Addr, protocol string
 				panic("Dial failed: " + err.Error())
 			}
 			glog.Errorf("Dial failed: %v", err)
+			sessionAffinityReset = true
 			continue
 		}
 		return outConn, nil

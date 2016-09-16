@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,12 @@ package e2e
 
 import (
 	"testing"
+
+	"k8s.io/kubernetes/test/e2e/framework"
 )
 
 func init() {
-	RegisterFlags()
+	framework.ViperizeFlags()
 }
 
 func TestE2E(t *testing.T) {

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ type Reactor interface {
 type WatchReactor interface {
 	// Handles indicates whether or not this Reactor deals with a given action
 	Handles(action Action) bool
-	// React handles a watch action and returns results.  It may choose to delegate by indicated handled=false
+	// React handles a watch action and returns results.  It may choose to delegate by indicating handled=false
 	React(action Action) (handled bool, ret watch.Interface, err error)
 }
 
@@ -63,20 +63,20 @@ type WatchReactor interface {
 type ProxyReactor interface {
 	// Handles indicates whether or not this Reactor deals with a given action
 	Handles(action Action) bool
-	// React handles a watch action and returns results.  It may choose to delegate by indicated handled=false
+	// React handles a watch action and returns results.  It may choose to delegate by indicating handled=false
 	React(action Action) (handled bool, ret restclient.ResponseWrapper, err error)
 }
 
 // ReactionFunc is a function that returns an object or error for a given Action.  If "handled" is false,
-// then the test client will continue ignore the results and continue to the next ReactionFunc
+// then the test client will ignore the results and continue to the next ReactionFunc
 type ReactionFunc func(action Action) (handled bool, ret runtime.Object, err error)
 
 // WatchReactionFunc is a function that returns a watch interface.  If "handled" is false,
-// then the test client will continue ignore the results and continue to the next ReactionFunc
+// then the test client will ignore the results and continue to the next ReactionFunc
 type WatchReactionFunc func(action Action) (handled bool, ret watch.Interface, err error)
 
 // ProxyReactionFunc is a function that returns a ResponseWrapper interface for a given Action.  If "handled" is false,
-// then the test client will continue ignore the results and continue to the next ProxyReactionFunc
+// then the test client will ignore the results and continue to the next ProxyReactionFunc
 type ProxyReactionFunc func(action Action) (handled bool, ret restclient.ResponseWrapper, err error)
 
 // AddReactor appends a reactor to the end of the chain
@@ -179,12 +179,12 @@ func (c *Fake) InvokesProxy(action Action) restclient.ResponseWrapper {
 // ClearActions clears the history of actions called on the fake client
 func (c *Fake) ClearActions() {
 	c.Lock()
-	c.Unlock()
+	defer c.Unlock()
 
 	c.actions = make([]Action, 0)
 }
 
-// Actions returns a chronologically ordered slice fake actions called on the fake client
+// Actions returns a chronologically ordered slice fake actions called on the fake client.
 func (c *Fake) Actions() []Action {
 	c.RLock()
 	defer c.RUnlock()
@@ -201,7 +201,7 @@ type FakeDiscovery struct {
 func (c *FakeDiscovery) ServerResourcesForGroupVersion(groupVersion string) (*unversioned.APIResourceList, error) {
 	action := ActionImpl{
 		Verb:     "get",
-		Resource: "resource",
+		Resource: unversioned.GroupVersionResource{Resource: "resource"},
 	}
 	c.Invokes(action, nil)
 	return c.Resources[groupVersion], nil
@@ -210,7 +210,7 @@ func (c *FakeDiscovery) ServerResourcesForGroupVersion(groupVersion string) (*un
 func (c *FakeDiscovery) ServerResources() (map[string]*unversioned.APIResourceList, error) {
 	action := ActionImpl{
 		Verb:     "get",
-		Resource: "resource",
+		Resource: unversioned.GroupVersionResource{Resource: "resource"},
 	}
 	c.Invokes(action, nil)
 	return c.Resources, nil
@@ -223,7 +223,7 @@ func (c *FakeDiscovery) ServerGroups() (*unversioned.APIGroupList, error) {
 func (c *FakeDiscovery) ServerVersion() (*version.Info, error) {
 	action := ActionImpl{}
 	action.Verb = "get"
-	action.Resource = "version"
+	action.Resource = unversioned.GroupVersionResource{Resource: "version"}
 
 	c.Invokes(action, nil)
 	versionInfo := version.Get()

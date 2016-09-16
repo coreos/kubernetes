@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/apis/extensions"
-	// Ensure that extensions/v1beta1 package is initialized.
-	_ "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/apis/autoscaling"
+	// Ensure that autoscaling/v1 package is initialized.
+	_ "k8s.io/kubernetes/pkg/apis/autoscaling/v1"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/generic"
@@ -32,26 +32,26 @@ import (
 )
 
 func newStorage(t *testing.T) (*REST, *StatusREST, *etcdtesting.EtcdTestServer) {
-	etcdStorage, server := registrytest.NewEtcdStorage(t, extensions.GroupName)
-	restOptions := generic.RESTOptions{etcdStorage, generic.UndecoratedStorage, 1}
+	etcdStorage, server := registrytest.NewEtcdStorage(t, autoscaling.GroupName)
+	restOptions := generic.RESTOptions{StorageConfig: etcdStorage, Decorator: generic.UndecoratedStorage, DeleteCollectionWorkers: 1}
 	horizontalPodAutoscalerStorage, statusStorage := NewREST(restOptions)
 	return horizontalPodAutoscalerStorage, statusStorage, server
 }
 
-func validNewHorizontalPodAutoscaler(name string) *extensions.HorizontalPodAutoscaler {
-	return &extensions.HorizontalPodAutoscaler{
+func validNewHorizontalPodAutoscaler(name string) *autoscaling.HorizontalPodAutoscaler {
+	cpu := int32(70)
+	return &autoscaling.HorizontalPodAutoscaler{
 		ObjectMeta: api.ObjectMeta{
 			Name:      name,
 			Namespace: api.NamespaceDefault,
 		},
-		Spec: extensions.HorizontalPodAutoscalerSpec{
-			ScaleRef: extensions.SubresourceReference{
-				Kind:        "ReplicationController",
-				Name:        "myrc",
-				Subresource: "scale",
+		Spec: autoscaling.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscaling.CrossVersionObjectReference{
+				Kind: "ReplicationController",
+				Name: "myrc",
 			},
-			MaxReplicas:    5,
-			CPUUtilization: &extensions.CPUTargetUtilization{TargetPercentage: 70},
+			MaxReplicas:                    5,
+			TargetCPUUtilizationPercentage: &cpu,
 		},
 	}
 }
@@ -59,27 +59,29 @@ func validNewHorizontalPodAutoscaler(name string) *extensions.HorizontalPodAutos
 func TestCreate(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	autoscaler := validNewHorizontalPodAutoscaler("foo")
 	autoscaler.ObjectMeta = api.ObjectMeta{}
 	test.TestCreate(
 		// valid
 		autoscaler,
 		// invalid
-		&extensions.HorizontalPodAutoscaler{},
+		&autoscaling.HorizontalPodAutoscaler{},
 	)
 }
 
 func TestUpdate(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestUpdate(
 		// valid
 		validNewHorizontalPodAutoscaler("foo"),
 		// updateFunc
 		func(obj runtime.Object) runtime.Object {
-			object := obj.(*extensions.HorizontalPodAutoscaler)
+			object := obj.(*autoscaling.HorizontalPodAutoscaler)
 			object.Spec.MaxReplicas = object.Spec.MaxReplicas + 1
 			return object
 		},
@@ -89,28 +91,32 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestDelete(validNewHorizontalPodAutoscaler("foo"))
 }
 
 func TestGet(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestGet(validNewHorizontalPodAutoscaler("foo"))
 }
 
 func TestList(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestList(validNewHorizontalPodAutoscaler("foo"))
 }
 
 func TestWatch(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestWatch(
 		validNewHorizontalPodAutoscaler("foo"),
 		// matching labels

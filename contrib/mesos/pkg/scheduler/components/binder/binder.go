@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -140,7 +140,7 @@ func (b *binder) prepareTaskForLaunch(ctx api.Context, machine string, task *pod
 		oemPorts := pod.Spec.Containers[entry.ContainerIdx].Ports
 		ports := append([]api.ContainerPort{}, oemPorts...)
 		p := &ports[entry.PortIdx]
-		p.HostPort = int(entry.OfferPort)
+		p.HostPort = int32(entry.OfferPort)
 		op := strconv.FormatUint(entry.OfferPort, 10)
 		pod.Annotations[fmt.Sprintf(annotation.PortMappingKeyFormat, p.Protocol, p.ContainerPort)] = op
 		if p.Name != "" {

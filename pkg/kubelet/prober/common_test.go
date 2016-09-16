@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,14 +37,14 @@ const (
 	testPodUID        = "pOd_UiD"
 )
 
-var testContainerID = kubecontainer.ContainerID{"test", "cOnTaInEr_Id"}
+var testContainerID = kubecontainer.ContainerID{Type: "test", ID: "cOnTaInEr_Id"}
 
 func getTestRunningStatus() api.PodStatus {
 	containerStatus := api.ContainerStatus{
 		Name:        testContainerName,
 		ContainerID: testContainerID.String(),
 	}
-	containerStatus.State.Running = &api.ContainerStateRunning{unversioned.Now()}
+	containerStatus.State.Running = &api.ContainerStateRunning{StartedAt: unversioned.Now()}
 	podStatus := api.PodStatus{
 		Phase:             api.PodRunning,
 		ContainerStatuses: []api.ContainerStatus{containerStatus},

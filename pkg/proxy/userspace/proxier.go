@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -419,13 +419,13 @@ func (proxier *Proxier) OnServiceUpdate(services []api.Service) {
 				continue
 			}
 			info.portal.ip = serviceIP
-			info.portal.port = servicePort.Port
+			info.portal.port = int(servicePort.Port)
 			info.externalIPs = service.Spec.ExternalIPs
 			// Deep-copy in case the service instance changes
 			info.loadBalancerStatus = *api.LoadBalancerStatusDeepCopy(&service.Status.LoadBalancer)
-			info.nodePort = servicePort.NodePort
+			info.nodePort = int(servicePort.NodePort)
 			info.sessionAffinityType = service.Spec.SessionAffinity
-			glog.V(4).Infof("info: %+v", info)
+			glog.V(4).Infof("info: %#v", info)
 
 			err = proxier.openPortal(serviceName, info)
 			if err != nil {
@@ -447,12 +447,13 @@ func (proxier *Proxier) OnServiceUpdate(services []api.Service) {
 			if err != nil {
 				glog.Errorf("Failed to stop service %q: %v", name, err)
 			}
+			proxier.loadBalancer.DeleteService(name)
 		}
 	}
 }
 
 func sameConfig(info *serviceInfo, service *api.Service, port *api.ServicePort) bool {
-	if info.protocol != port.Protocol || info.portal.port != port.Port || info.nodePort != port.NodePort {
+	if info.protocol != port.Protocol || info.portal.port != int(port.Port) || info.nodePort != int(port.NodePort) {
 		return false
 	}
 	if !info.portal.ip.Equal(net.ParseIP(service.Spec.ClusterIP)) {

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/httpstream"
 )
 
+// be sure to unset environment variable https_proxy (if exported) before testing, otherwise the testing will fail unexpectedly.
 func TestRoundTripAndNewConnection(t *testing.T) {
 	localhostPool := x509.NewCertPool()
 	if !localhostPool.AppendCertsFromPEM(localhostCert) {
@@ -264,8 +265,7 @@ func TestRoundTripAndNewConnection(t *testing.T) {
 			stream := <-streamCh
 			io.Copy(stream, stream)
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer server.Close()
+		defer server.Close()
 
 		serverURL, err := url.Parse(server.URL)
 		if err != nil {
@@ -305,8 +305,7 @@ func TestRoundTripAndNewConnection(t *testing.T) {
 				proxyURL.User = testCase.proxyAuth
 				return proxyURL, nil
 			}
-			// TODO: Uncomment when fix #19254
-			// defer proxy.Close()
+			defer proxy.Close()
 		}
 
 		client := &http.Client{Transport: spdyTransport}

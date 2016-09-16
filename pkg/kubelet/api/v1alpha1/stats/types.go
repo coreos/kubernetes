@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -46,6 +46,16 @@ type NodeStats struct {
 	// Stats pertaining to total usage of filesystem resources on the rootfs used by node k8s components.
 	// NodeFs.Used is the total bytes used on the filesystem.
 	Fs *FsStats `json:"fs,omitempty"`
+	// Stats about the underlying container runtime.
+	Runtime *RuntimeStats `json:"runtime,omitempty"`
+}
+
+// Stats pertaining to the underlying container runtime.
+type RuntimeStats struct {
+	// Stats about the underlying filesystem where container images are stored.
+	// This filesystem could be the same as the primary (root) filesystem.
+	// Usage here refers to the total number of bytes occupied by images on the filesystem.
+	ImageFs *FsStats `json:"imageFs,omitempty"`
 }
 
 const (
@@ -128,11 +138,17 @@ type CPUStats struct {
 type MemoryStats struct {
 	// The time at which these stats were updated.
 	Time unversioned.Time `json:"time"`
+	// Available memory for use.  This is defined as the memory limit - workingSetBytes.
+	// If memory limit is undefined, the available bytes is omitted.
+	AvailableBytes *uint64 `json:"availableBytes,omitempty"`
 	// Total memory in use. This includes all memory regardless of when it was accessed.
 	UsageBytes *uint64 `json:"usageBytes,omitempty"`
 	// The amount of working set memory. This includes recently accessed memory,
-	// dirty memory, and kernel memory. UsageBytes is <= TotalBytes.
+	// dirty memory, and kernel memory. WorkingSetBytes is <= UsageBytes
 	WorkingSetBytes *uint64 `json:"workingSetBytes,omitempty"`
+	// The amount of anonymous and swap cache memory (includes transparent
+	// hugepages).
+	RSSBytes *uint64 `json:"rssBytes,omitempty"`
 	// Cumulative number of minor page faults.
 	PageFaults *uint64 `json:"pageFaults,omitempty"`
 	// Cumulative number of major page faults.
@@ -157,6 +173,10 @@ type FsStats struct {
 	// This may differ from the total bytes used on the filesystem and may not equal CapacityBytes - AvailableBytes.
 	// e.g. For ContainerStats.Rootfs this is the bytes used by the container rootfs on the filesystem.
 	UsedBytes *uint64 `json:"usedBytes,omitempty"`
+	// InodesFree represents the free inodes in the filesystem.
+	InodesFree *uint64 `json:"inodesFree,omitempty"`
+	// Inodes represents the total inodes in the filesystem.
+	Inodes *uint64 `json:"inodes,omitempty"`
 }
 
 // UserDefinedMetricType defines how the metric should be interpreted by the user.
@@ -194,6 +214,6 @@ type UserDefinedMetric struct {
 	// The time at which these stats were updated.
 	Time unversioned.Time `json:"time"`
 	// Value of the metric. Float64s have 53 bit precision.
-	// We do not forsee any metrics exceeding that value.
+	// We do not foresee any metrics exceeding that value.
 	Value float64 `json:"value"`
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -48,8 +48,8 @@ func MatchesNoScopeFunc(scope api.ResourceQuotaScope, object runtime.Object) boo
 	return false
 }
 
-// ObjectCountConstraintsFunc returns true if the specified resource name is in
-// the required set of resource names
+// ObjectCountConstraintsFunc returns ConstraintsFunc that returns nil if the
+// specified resource name is in the required set of resource names
 func ObjectCountConstraintsFunc(resourceName api.ResourceName) ConstraintsFunc {
 	return func(required []api.ResourceName, item runtime.Object) error {
 		if !quota.Contains(required, resourceName) {
@@ -133,6 +133,7 @@ func (g *GenericEvaluator) Matches(resourceQuota *api.ResourceQuota, item runtim
 	for resourceName := range resourceQuota.Status.Hard {
 		if g.MatchesResource(resourceName) {
 			matchResource = true
+			break
 		}
 	}
 	// by default, no scopes matches all
@@ -172,11 +173,11 @@ func (g *GenericEvaluator) UsageStats(options quota.UsageStatsOptions) (quota.Us
 	}
 	list, err := g.ListFuncByNamespace(options.Namespace, api.ListOptions{})
 	if err != nil {
-		return result, fmt.Errorf("%s: Failed to list %v: %v", g.Name, g.GroupKind, err)
+		return result, fmt.Errorf("%s: Failed to list %v: %v", g.Name, g.GroupKind(), err)
 	}
-	_, err = meta.Accessor(list)
+	_, err = meta.ListAccessor(list)
 	if err != nil {
-		return result, fmt.Errorf("%s: Unable to understand list result %#v", g.Name, list)
+		return result, fmt.Errorf("%s: Unable to understand list result, does not appear to be a list %#v", g.Name, list)
 	}
 	items, err := meta.ExtractList(list)
 	if err != nil {

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -70,8 +70,7 @@ func testHTTPContainerInfoGetter(
 			t.Fatal(err)
 		}
 	}))
-	// TODO: Uncomment when fix #19254
-	// defer ts.Close()
+	defer ts.Close()
 	hostURL, err := url.Parse(ts.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -172,8 +171,7 @@ func TestHTTPGetMachineInfo(t *testing.T) {
 			t.Fatal(err)
 		}
 	}))
-	// TODO: Uncomment when fix #19254
-	// defer ts.Close()
+	defer ts.Close()
 	hostURL, err := url.Parse(ts.URL)
 	if err != nil {
 		t.Fatal(err)

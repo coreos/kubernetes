@@ -2,15 +2,15 @@
 
 <!-- BEGIN STRIP_FOR_RELEASE -->
 
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
 
 <h2>PLEASE NOTE: This document applies to the HEAD of the source tree</h2>
@@ -21,7 +21,7 @@ refer to the docs that go with that version.
 <!-- TAG RELEASE_LINK, added by the munger automatically -->
 <strong>
 The latest release of this document can be found
-[here](http://releases.k8s.io/release-1.2/docs/devel/writing-good-e2e-tests.md).
+[here](http://releases.k8s.io/release-1.4/docs/devel/writing-good-e2e-tests.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -180,7 +180,7 @@ right thing.
 
 Here are a few pointers:
 
-+ [E2e Framework](../../test/e2e/framework.go):
++ [E2e Framework](../../test/e2e/framework/framework.go):
    Familiarise yourself with this test framework and how to use it.
    Amongst others, it automatically creates uniquely named namespaces
    within which your tests can run to avoid name clashes, and reliably
@@ -194,7 +194,7 @@ Here are a few pointers:
    should always use this framework.  Trying other home-grown
    approaches to avoiding name clashes and resource leaks has proven
    to be a very bad idea.
-+ [E2e utils library](../../test/e2e/util.go):
++ [E2e utils library](../../test/e2e/framework/util.go):
    This handy library provides tons of reusable code for a host of
    commonly needed test functionality, including waiting for resources
    to enter specified states, safely and consistently retrying failed

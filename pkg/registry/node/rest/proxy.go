@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/capabilities"
 	"k8s.io/kubernetes/pkg/kubelet/client"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	genericrest "k8s.io/kubernetes/pkg/registry/generic/rest"
 	"k8s.io/kubernetes/pkg/registry/node"
 	"k8s.io/kubernetes/pkg/runtime"
@@ -34,7 +34,7 @@ import (
 
 // ProxyREST implements the proxy subresource for a Node
 type ProxyREST struct {
-	Store          *etcdgeneric.Etcd
+	Store          *registry.Store
 	Connection     client.ConnectionInfoGetter
 	ProxyTransport http.RoundTripper
 }

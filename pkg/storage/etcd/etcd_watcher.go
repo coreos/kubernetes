@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,8 @@ package etcd
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -42,25 +42,9 @@ const (
 	EtcdSet    = "set"
 	EtcdCAS    = "compareAndSwap"
 	EtcdDelete = "delete"
+	EtcdCAD    = "compareAndDelete"
 	EtcdExpire = "expire"
 )
-
-// HighWaterMark is a thread-safe object for tracking the maximum value seen
-// for some quantity.
-type HighWaterMark int64
-
-// Update returns true if and only if 'current' is the highest value ever seen.
-func (hwm *HighWaterMark) Update(current int64) bool {
-	for {
-		old := atomic.LoadInt64((*int64)(hwm))
-		if current <= old {
-			return false
-		}
-		if atomic.CompareAndSwapInt64((*int64)(hwm), old, current) {
-			return true
-		}
-	}
-}
 
 // TransformFunc attempts to convert an object to another object for use with a watcher.
 type TransformFunc func(runtime.Object) (runtime.Object, error)
@@ -87,7 +71,7 @@ type etcdWatcher struct {
 	list    bool // If we're doing a recursive watch, should be true.
 	quorum  bool // If we enable quorum, shoule be true
 	include includeFunc
-	filter  storage.FilterFunc
+	filter  storage.Filter
 
 	etcdIncoming  chan *etcd.Response
 	etcdError     chan error
@@ -99,11 +83,16 @@ type etcdWatcher struct {
 	userStop chan struct{}
 	stopped  bool
 	stopLock sync.Mutex
-	// wg is used to avoid calls to etcd after Stop()
+	// wg is used to avoid calls to etcd after Stop(), and to make sure
+	// that the translate goroutine is not leaked.
 	wg sync.WaitGroup
 
 	// Injectable for testing. Send the event down the outgoing channel.
 	emit func(watch.Event)
+
+	// HighWaterMarks for performance debugging.
+	incomingHWM storage.HighWaterMark
+	outgoingHWM storage.HighWaterMark
 
 	cache etcdCache
 }
@@ -114,7 +103,7 @@ const watchWaitDuration = 100 * time.Millisecond
 // newEtcdWatcher returns a new etcdWatcher; if list is true, watch sub-nodes.
 // The versioner must be able to handle the objects that transform creates.
 func newEtcdWatcher(
-	list bool, quorum bool, include includeFunc, filter storage.FilterFunc,
+	list bool, quorum bool, include includeFunc, filter storage.Filter,
 	encoding runtime.Codec, versioner storage.Versioner, transform TransformFunc,
 	cache etcdCache) *etcdWatcher {
 	w := &etcdWatcher{
@@ -137,15 +126,31 @@ func newEtcdWatcher(
 		// monitor how much of this buffer is actually used.
 		etcdIncoming: make(chan *etcd.Response, 100),
 		etcdError:    make(chan error, 1),
-		outgoing:     make(chan watch.Event),
-		userStop:     make(chan struct{}),
-		stopped:      false,
-		wg:           sync.WaitGroup{},
-		cache:        cache,
-		ctx:          nil,
-		cancel:       nil,
+		// Similarly to etcdIncomming, we don't want to force context
+		// switch on every new incoming object.
+		outgoing: make(chan watch.Event, 100),
+		userStop: make(chan struct{}),
+		stopped:  false,
+		wg:       sync.WaitGroup{},
+		cache:    cache,
+		ctx:      nil,
+		cancel:   nil,
 	}
-	w.emit = func(e watch.Event) { w.outgoing <- e }
+	w.emit = func(e watch.Event) {
+		if curLen := int64(len(w.outgoing)); w.outgoingHWM.Update(curLen) {
+			// Monitor if this gets backed up, and how much.
+			glog.V(1).Infof("watch (%v): %v objects queued in outgoing channel.", reflect.TypeOf(e.Object).String(), curLen)
+		}
+		// Give up on user stop, without this we leak a lot of goroutines in tests.
+		select {
+		case w.outgoing <- e:
+		case <-w.userStop:
+		}
+	}
+	// translate will call done. We need to Add() here because otherwise,
+	// if Stop() gets called before translate gets started, there'd be a
+	// problem.
+	w.wg.Add(1)
 	go w.translate()
 	return w
 }
@@ -248,13 +253,10 @@ func convertRecursiveResponse(node *etcd.Node, response *etcd.Response, incoming
 	incoming <- &copied
 }
 
-var (
-	watchChannelHWM HighWaterMark
-)
-
 // translate pulls stuff from etcd, converts, and pushes out the outgoing channel. Meant to be
 // called as a goroutine.
 func (w *etcdWatcher) translate() {
+	defer w.wg.Done()
 	defer close(w.outgoing)
 	defer utilruntime.HandleCrash()
 
@@ -293,9 +295,9 @@ func (w *etcdWatcher) translate() {
 			return
 		case res, ok := <-w.etcdIncoming:
 			if ok {
-				if curLen := int64(len(w.etcdIncoming)); watchChannelHWM.Update(curLen) {
+				if curLen := int64(len(w.etcdIncoming)); w.incomingHWM.Update(curLen) {
 					// Monitor if this gets backed up, and how much.
-					glog.V(2).Infof("watch: %v objects queued in channel.", curLen)
+					glog.V(1).Infof("watch: %v objects queued in incoming channel.", curLen)
 				}
 				w.sendResult(res)
 			}
@@ -316,7 +318,7 @@ func (w *etcdWatcher) decodeObject(node *etcd.Node) (runtime.Object, error) {
 	}
 
 	// ensure resource version is set on the object we load from etcd
-	if err := w.versioner.UpdateObject(obj, node.Expiration, node.ModifiedIndex); err != nil {
+	if err := w.versioner.UpdateObject(obj, node.ModifiedIndex); err != nil {
 		utilruntime.HandleError(fmt.Errorf("failure to version api object (%d) %#v: %v", node.ModifiedIndex, obj, err))
 	}
 
@@ -351,7 +353,7 @@ func (w *etcdWatcher) sendAdd(res *etcd.Response) {
 		// the resourceVersion to resume will never be able to get past a bad value.
 		return
 	}
-	if !w.filter(obj) {
+	if !w.filter.Filter(obj) {
 		return
 	}
 	action := watch.Added
@@ -380,13 +382,16 @@ func (w *etcdWatcher) sendModify(res *etcd.Response) {
 		// the resourceVersion to resume will never be able to get past a bad value.
 		return
 	}
-	curObjPasses := w.filter(curObj)
+	curObjPasses := w.filter.Filter(curObj)
 	oldObjPasses := false
 	var oldObj runtime.Object
 	if res.PrevNode != nil && res.PrevNode.Value != "" {
 		// Ignore problems reading the old object.
 		if oldObj, err = w.decodeObject(res.PrevNode); err == nil {
-			oldObjPasses = w.filter(oldObj)
+			if err := w.versioner.UpdateObject(oldObj, res.Node.ModifiedIndex); err != nil {
+				utilruntime.HandleError(fmt.Errorf("failure to version api object (%d) %#v: %v", res.Node.ModifiedIndex, oldObj, err))
+			}
+			oldObjPasses = w.filter.Filter(oldObj)
 		}
 	}
 	// Some changes to an object may cause it to start or stop matching a filter.
@@ -435,7 +440,7 @@ func (w *etcdWatcher) sendDelete(res *etcd.Response) {
 		// the resourceVersion to resume will never be able to get past a bad value.
 		return
 	}
-	if !w.filter(obj) {
+	if !w.filter.Filter(obj) {
 		return
 	}
 	w.emit(watch.Event{
@@ -450,7 +455,7 @@ func (w *etcdWatcher) sendResult(res *etcd.Response) {
 		w.sendAdd(res)
 	case EtcdSet, EtcdCAS:
 		w.sendModify(res)
-	case EtcdDelete, EtcdExpire:
+	case EtcdDelete, EtcdExpire, EtcdCAD:
 		w.sendDelete(res)
 	default:
 		utilruntime.HandleError(fmt.Errorf("unknown action: %v", res.Action))

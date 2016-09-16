@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,8 +36,7 @@ func TestInputStreamReader(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Write([]byte(resultString))
 	}))
-	// TODO: Uncomment when fix #19254
-	// defer s.Close()
+	defer s.Close()
 	u, err := url.Parse(s.URL)
 	if err != nil {
 		t.Errorf("Error parsing server URL: %v", err)

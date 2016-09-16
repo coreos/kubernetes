@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -142,17 +142,23 @@ func TestParseLiteralSource(t *testing.T) {
 		{
 			name:  "err 1",
 			input: "key==value",
-			err:   true,
+			key:   "key",
+			value: "=value",
+			err:   false,
 		},
 		{
 			name:  "err 2",
 			input: "key=value=",
-			err:   true,
+			key:   "key",
+			value: "value=",
+			err:   false,
 		},
 		{
 			name:  "err 3",
 			input: "key2=value==",
-			err:   true,
+			key:   "key2",
+			value: "value==",
+			err:   false,
 		},
 		{
 			name:  "err 4",

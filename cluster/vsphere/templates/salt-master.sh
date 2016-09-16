@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +27,8 @@ grains:
     - kubernetes-master
   cbr-cidr: $MASTER_IP_RANGE
   cloud: vsphere
+  master_extra_sans: $MASTER_EXTRA_SANS
+  kube_user: $KUBE_USER
 EOF
 
 # Auto accept all keys from minions that try to join

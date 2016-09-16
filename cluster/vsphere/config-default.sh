@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,6 +56,12 @@ DNS_REPLICAS=1
 
 # Optional: Install Kubernetes UI
 ENABLE_CLUSTER_UI="${KUBE_ENABLE_CLUSTER_UI:-true}"
+
+# We need to configure subject alternate names (SANs) for the master's certificate
+# we generate.  While users will connect via the external IP, pods (like the UI)
+# will connect via the cluster IP, from the SERVICE_CLUSTER_IP_RANGE.
+# In addition to the extra SANS here, we'll also add one for for the service IP.
+MASTER_EXTRA_SANS="DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc,DNS:kubernetes.default.svc.${DNS_DOMAIN}"
 
 # Optional: if set to true, kube-up will configure the cluster to run e2e tests.
 E2E_STORAGE_TEST_ENVIRONMENT=${KUBE_E2E_STORAGE_TEST_ENVIRONMENT:-false}

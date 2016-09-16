@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,6 +29,10 @@ type Args struct {
 	// the respective types.go. We still need GroupVersions in the struct because
 	// we need an order.
 	GroupVersionToInputPath map[unversioned.GroupVersion]string
+
+	// Overrides for which types should be included in the client.
+	IncludedTypesOverrides map[unversioned.GroupVersion][]string
+
 	// ClientsetName is the name of the clientset to be generated. It's
 	// populated from command-line arguments.
 	ClientsetName string

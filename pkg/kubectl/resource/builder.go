@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,6 +36,8 @@ import (
 var FileExtensions = []string{".json", ".yaml", ".yml"}
 var InputExtensions = append(FileExtensions, "stdin")
 
+const defaultHttpGetAttempts int = 3
+
 // Builder provides convenience functions for taking arguments and parameters
 // from the command line and converting them to a list of resources to iterate
 // over using the Visitor interface.
@@ -69,9 +71,26 @@ type Builder struct {
 	singleResourceType bool
 	continueOnError    bool
 
+	singular bool
+
 	export bool
 
 	schema validation.Schema
+}
+
+var missingResourceError = fmt.Errorf(`You must provide one or more resources by argument or filename.
+Example resource specifications include:
+   '-f rsrc.yaml'
+   '--filename=rsrc.json'
+   'pods my-pod'
+   'services'`)
+
+// TODO: expand this to include other errors.
+func IsUsageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err == missingResourceError
 }
 
 type resourceTuple struct {
@@ -98,7 +117,7 @@ func (b *Builder) Schema(schema validation.Schema) *Builder {
 // will cause an error.
 // If ContinueOnError() is set prior to this method, objects on the path that are not
 // recognized will be ignored (but logged at V(2)).
-func (b *Builder) FilenameParam(enforceNamespace bool, paths ...string) *Builder {
+func (b *Builder) FilenameParam(enforceNamespace, recursive bool, paths ...string) *Builder {
 	for _, s := range paths {
 		switch {
 		case s == "-":
@@ -109,9 +128,12 @@ func (b *Builder) FilenameParam(enforceNamespace bool, paths ...string) *Builder
 				b.errs = append(b.errs, fmt.Errorf("the URL passed to filename %q is not valid: %v", s, err))
 				continue
 			}
-			b.URL(url)
+			b.URL(defaultHttpGetAttempts, url)
 		default:
-			b.Path(s)
+			if !recursive {
+				b.singular = true
+			}
+			b.Path(recursive, s)
 		}
 	}
 
@@ -123,11 +145,12 @@ func (b *Builder) FilenameParam(enforceNamespace bool, paths ...string) *Builder
 }
 
 // URL accepts a number of URLs directly.
-func (b *Builder) URL(urls ...*url.URL) *Builder {
+func (b *Builder) URL(httpAttemptCount int, urls ...*url.URL) *Builder {
 	for _, u := range urls {
 		b.paths = append(b.paths, &URLVisitor{
-			URL:           u,
-			StreamVisitor: NewStreamVisitor(nil, b.mapper, u.String(), b.schema),
+			URL:              u,
+			StreamVisitor:    NewStreamVisitor(nil, b.mapper, u.String(), b.schema),
+			HttpAttemptCount: httpAttemptCount,
 		})
 	}
 	return b
@@ -157,7 +180,7 @@ func (b *Builder) Stream(r io.Reader, name string) *Builder {
 // FileVisitor is streaming the content to a StreamVisitor. If ContinueOnError() is set
 // prior to this method being called, objects on the path that are unrecognized will be
 // ignored (but logged at V(2)).
-func (b *Builder) Path(paths ...string) *Builder {
+func (b *Builder) Path(recursive bool, paths ...string) *Builder {
 	for _, p := range paths {
 		_, err := os.Stat(p)
 		if os.IsNotExist(err) {
@@ -169,7 +192,7 @@ func (b *Builder) Path(paths ...string) *Builder {
 			continue
 		}
 
-		visitors, err := ExpandPathsToFileVisitors(b.mapper, p, false, FileExtensions, b.schema)
+		visitors, err := ExpandPathsToFileVisitors(b.mapper, p, recursive, FileExtensions, b.schema)
 		if err != nil {
 			b.errs = append(b.errs, fmt.Errorf("error reading %q: %v", p, err))
 		}
@@ -202,6 +225,10 @@ func (b *Builder) ResourceNames(resource string, names ...string) *Builder {
 
 		if ok {
 			b.resourceTuples = append(b.resourceTuples, tuple)
+			continue
+		}
+		if len(resource) == 0 {
+			b.errs = append(b.errs, fmt.Errorf("the argument %q must be RESOURCE/NAME", name))
 			continue
 		}
 
@@ -325,7 +352,7 @@ func (b *Builder) ResourceTypeOrNameArgs(allowEmptySelector bool, args ...string
 		}
 	case len(args) == 0:
 	default:
-		b.errs = append(b.errs, fmt.Errorf("when passing arguments, must be resource or resource and name"))
+		b.errs = append(b.errs, fmt.Errorf("arguments must consist of a resource or a resource and name"))
 	}
 	return b
 }
@@ -354,7 +381,12 @@ func hasCombinedTypeArgs(args []string) (bool, error) {
 	case hasSlash > 0 && hasSlash == len(args):
 		return true, nil
 	case hasSlash > 0 && hasSlash != len(args):
-		return true, fmt.Errorf("when passing arguments in resource/name form, all arguments must include the resource")
+		baseCmd := "cmd"
+		if len(os.Args) > 0 {
+			baseCmdSlice := strings.Split(os.Args[0], "/")
+			baseCmd = baseCmdSlice[len(baseCmdSlice)-1]
+		}
+		return true, fmt.Errorf("there is no need to specify a resource type as a separate argument when passing arguments in resource/name form (e.g. '%s get resource/<resource_name>' instead of '%s get resource resource/<resource_name>'", baseCmd, baseCmd)
 	default:
 		return false, nil
 	}
@@ -441,7 +473,7 @@ func (b *Builder) mappingFor(resourceArg string) (*meta.RESTMapping, error) {
 	if fullySpecifiedGVR != nil {
 		gvk, _ = b.mapper.KindFor(*fullySpecifiedGVR)
 	}
-	if gvk.IsEmpty() {
+	if gvk.Empty() {
 		var err error
 		gvk, err = b.mapper.KindFor(groupResource.WithVersion(""))
 		if err != nil {
@@ -543,7 +575,12 @@ func (b *Builder) visitorResult() *Result {
 
 	// visit items specified by resource and name
 	if len(b.resourceTuples) != 0 {
-		isSingular := len(b.resourceTuples) == 1
+		// if b.singular is false, this could be by default, so double-check length
+		// of resourceTuples to determine if in fact it is singular or not
+		isSingular := b.singular
+		if !isSingular {
+			isSingular = len(b.resourceTuples) == 1
+		}
 
 		if len(b.paths) != 0 {
 			return &Result{singular: isSingular, err: fmt.Errorf("when paths, URLs, or stdin is provided as input, you may not specify a resource by arguments as well")}
@@ -675,7 +712,10 @@ func (b *Builder) visitorResult() *Result {
 		return &Result{singular: singular, visitor: visitors, sources: b.paths}
 	}
 
-	return &Result{err: fmt.Errorf("you must provide one or more resources by argument or filename (%s)", strings.Join(InputExtensions, "|"))}
+	if len(b.resources) != 0 {
+		return &Result{err: fmt.Errorf("resource(s) were provided, but no name, label selector, or --all flag specified")}
+	}
+	return &Result{err: missingResourceError}
 }
 
 // Do returns a Result object with a Visitor for the resources identified by the Builder.

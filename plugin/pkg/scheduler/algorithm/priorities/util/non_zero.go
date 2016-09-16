@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@ limitations under the License.
 
 package util
 
-import "k8s.io/kubernetes/pkg/api"
+import (
+	"k8s.io/kubernetes/pkg/api"
+)
 
 // For each of these resources, a pod that doesn't request the resource explicitly
 // will be treated as having requested the amount indicated below, for the purpose

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,14 +21,18 @@ import (
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/registry/registrytest"
 )
 
 func TestPodLogValidates(t *testing.T) {
-	etcdStorage, _ := registrytest.NewEtcdStorage(t, "")
-	store := &etcdgeneric.Etcd{
-		Storage: etcdStorage,
+	config, server := registrytest.NewEtcdStorage(t, "")
+	defer server.Terminate(t)
+	s, destroyFunc := generic.NewRawStorage(config)
+	defer destroyFunc()
+	store := &registry.Store{
+		Storage: s,
 	}
 	logRest := &LogREST{Store: store, KubeletConn: nil}
 

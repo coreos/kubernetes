@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/client/testing/core"
 	"k8s.io/kubernetes/pkg/client/typed/dynamic"
+	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/sets"
 )
 
@@ -132,8 +133,9 @@ func testSyncNamespaceThatIsTerminating(t *testing.T, versions *unversioned.APIV
 			testNamespace: testNamespacePendingFinalize,
 			kubeClientActionSet: sets.NewString(
 				strings.Join([]string{"get", "namespaces", ""}, "-"),
-				strings.Join([]string{"list", "pods", ""}, "-"),
 				strings.Join([]string{"create", "namespaces", "finalize"}, "-"),
+				strings.Join([]string{"list", "pods", ""}, "-"),
+				strings.Join([]string{"delete", "namespaces", ""}, "-"),
 			),
 			dynamicClientActionSet: dynamicClientActionSet,
 		},
@@ -163,7 +165,7 @@ func testSyncNamespaceThatIsTerminating(t *testing.T, versions *unversioned.APIV
 		// validate traffic from kube client
 		actionSet := sets.NewString()
 		for _, action := range mockClient.Actions() {
-			actionSet.Insert(strings.Join([]string{action.GetVerb(), action.GetResource(), action.GetSubresource()}, "-"))
+			actionSet.Insert(strings.Join([]string{action.GetVerb(), action.GetResource().Resource, action.GetSubresource()}, "-"))
 		}
 		if !actionSet.Equal(testInput.kubeClientActionSet) {
 			t.Errorf("scenario %s - mock client expected actions:\n%v\n but got:\n%v\nDifference:\n%v", scenario,
@@ -268,8 +270,9 @@ func (f *fakeActionHandler) ServeHTTP(response http.ResponseWriter, request *htt
 	defer f.lock.Unlock()
 
 	f.actions = append(f.actions, fakeAction{method: request.Method, path: request.URL.Path})
+	response.Header().Set("Content-Type", runtime.ContentTypeJSON)
 	response.WriteHeader(f.statusCode)
-	response.Write([]byte("{\"kind\": \"List\"}"))
+	response.Write([]byte("{\"kind\": \"List\",\"items\":null}"))
 }
 
 // testGroupVersionResources returns a mocked up set of resources across different api groups for testing namespace controller.

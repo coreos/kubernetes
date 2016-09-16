@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ var testTTL uint64 = 60
 
 func newStorage(t *testing.T) (*REST, *etcdtesting.EtcdTestServer) {
 	etcdStorage, server := registrytest.NewEtcdStorage(t, "")
-	restOptions := generic.RESTOptions{etcdStorage, generic.UndecoratedStorage, 1}
+	restOptions := generic.RESTOptions{StorageConfig: etcdStorage, Decorator: generic.UndecoratedStorage, DeleteCollectionWorkers: 1}
 	return NewREST(restOptions, testTTL), server
 }
 
@@ -51,7 +51,8 @@ func validNewEvent(namespace string) *api.Event {
 func TestCreate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	event := validNewEvent(test.TestNamespace())
 	event.ObjectMeta = api.ObjectMeta{}
 	test.TestCreate(
@@ -65,7 +66,8 @@ func TestCreate(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd).AllowCreateOnUpdate()
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store).AllowCreateOnUpdate()
 	test.TestUpdate(
 		// valid
 		validNewEvent(test.TestNamespace()),
@@ -87,6 +89,7 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestDelete(validNewEvent(test.TestNamespace()))
 }

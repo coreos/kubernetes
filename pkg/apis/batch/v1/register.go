@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/runtime"
+	versionedwatch "k8s.io/kubernetes/pkg/watch/versioned"
 )
 
 // GroupName is the group name use in this package
@@ -28,20 +29,19 @@ const GroupName = "batch"
 // SchemeGroupVersion is group version used to register these objects
 var SchemeGroupVersion = unversioned.GroupVersion{Group: GroupName, Version: "v1"}
 
-func AddToScheme(scheme *runtime.Scheme) {
-	addKnownTypes(scheme)
-	addDefaultingFuncs(scheme)
-	addConversionFuncs(scheme)
-}
+var (
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes, addDefaultingFuncs, addConversionFuncs)
+	AddToScheme   = SchemeBuilder.AddToScheme
+)
 
 // Adds the list of known types to api.Scheme.
-func addKnownTypes(scheme *runtime.Scheme) {
+func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&Job{},
 		&JobList{},
 		&v1.ListOptions{},
+		&v1.DeleteOptions{},
 	)
+	versionedwatch.AddToGroupVersion(scheme, SchemeGroupVersion)
+	return nil
 }
-
-func (obj *Job) GetObjectKind() unversioned.ObjectKind     { return &obj.TypeMeta }
-func (obj *JobList) GetObjectKind() unversioned.ObjectKind { return &obj.TypeMeta }

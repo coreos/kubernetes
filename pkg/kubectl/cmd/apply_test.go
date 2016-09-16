@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -28,8 +29,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/annotations"
+	kubeerr "k8s.io/kubernetes/pkg/api/errors"
+	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/fake"
-	"k8s.io/kubernetes/pkg/kubectl"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/runtime"
 )
@@ -37,7 +41,7 @@ import (
 func TestApplyExtraArgsFail(t *testing.T) {
 	buf := bytes.NewBuffer([]byte{})
 
-	f, _, _ := NewAPIFactory()
+	f, _, _, _ := NewAPIFactory()
 	c := NewCmdApply(f, buf)
 	if validateApplyArgs(c, []string{"rc"}) == nil {
 		t.Fatalf("unexpected non-error")
@@ -62,6 +66,7 @@ func readBytesFromFile(t *testing.T, filename string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer file.Close()
 
 	data, err := ioutil.ReadAll(file)
 	if err != nil {
@@ -94,33 +99,36 @@ func readServiceFromFile(t *testing.T, filename string) *api.Service {
 }
 
 func annotateRuntimeObject(t *testing.T, originalObj, currentObj runtime.Object, kind string) (string, []byte) {
-	originalMeta, err := api.ObjectMetaFor(originalObj)
+	originalAccessor, err := meta.Accessor(originalObj)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	originalMeta.Labels["DELETE_ME"] = "DELETE_ME"
+	originalLabels := originalAccessor.GetLabels()
+	originalLabels["DELETE_ME"] = "DELETE_ME"
+	originalAccessor.SetLabels(originalLabels)
 	original, err := json.Marshal(originalObj)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	currentMeta, err := api.ObjectMetaFor(currentObj)
+	currentAccessor, err := meta.Accessor(currentObj)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if currentMeta.Annotations == nil {
-		currentMeta.Annotations = map[string]string{}
+	currentAnnotations := currentAccessor.GetAnnotations()
+	if currentAnnotations == nil {
+		currentAnnotations = make(map[string]string)
 	}
-
-	currentMeta.Annotations[kubectl.LastAppliedConfigAnnotation] = string(original)
+	currentAnnotations[annotations.LastAppliedConfigAnnotation] = string(original)
+	currentAccessor.SetAnnotations(currentAnnotations)
 	current, err := json.Marshal(currentObj)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return currentMeta.Name, current
+	return currentAccessor.GetName(), current
 }
 
 func readAndAnnotateReplicationController(t *testing.T, filename string) (string, []byte) {
@@ -147,7 +155,7 @@ func validatePatchApplication(t *testing.T, req *http.Request) {
 	}
 
 	annotationsMap := walkMapPath(t, patchMap, []string{"metadata", "annotations"})
-	if _, ok := annotationsMap[kubectl.LastAppliedConfigAnnotation]; !ok {
+	if _, ok := annotationsMap[annotations.LastAppliedConfigAnnotation]; !ok {
 		t.Fatalf("patch does not contain annotation:\n%s\n", patch)
 	}
 
@@ -175,19 +183,19 @@ func TestApplyObject(t *testing.T) {
 	nameRC, currentRC := readAndAnnotateReplicationController(t, filenameRC)
 	pathRC := "/namespaces/test/replicationcontrollers/" + nameRC
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, _, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == pathRC && m == "GET":
 				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
-				return &http.Response{StatusCode: 200, Body: bodyRC}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodyRC}, nil
 			case p == pathRC && m == "PATCH":
 				validatePatchApplication(t, req)
 				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
-				return &http.Response{StatusCode: 200, Body: bodyRC}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodyRC}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -209,22 +217,79 @@ func TestApplyObject(t *testing.T) {
 	}
 }
 
+func TestApplyRetry(t *testing.T) {
+	initTestErrorHandler(t)
+	nameRC, currentRC := readAndAnnotateReplicationController(t, filenameRC)
+	pathRC := "/namespaces/test/replicationcontrollers/" + nameRC
+
+	firstPatch := true
+	retry := false
+	getCount := 0
+	f, tf, _, ns := NewAPIFactory()
+	tf.Printer = &testPrinter{}
+	tf.Client = &fake.RESTClient{
+		NegotiatedSerializer: ns,
+		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+			switch p, m := req.URL.Path, req.Method; {
+			case p == pathRC && m == "GET":
+				getCount++
+				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodyRC}, nil
+			case p == pathRC && m == "PATCH":
+				if firstPatch {
+					firstPatch = false
+					statusErr := kubeerr.NewConflict(unversioned.GroupResource{Group: "", Resource: "rc"}, "test-rc", fmt.Errorf("the object has been modified. Please apply at first."))
+					bodyBytes, _ := json.Marshal(statusErr)
+					bodyErr := ioutil.NopCloser(bytes.NewReader(bodyBytes))
+					return &http.Response{StatusCode: http.StatusConflict, Header: defaultHeader(), Body: bodyErr}, nil
+				}
+				retry = true
+				validatePatchApplication(t, req)
+				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodyRC}, nil
+			default:
+				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
+				return nil, nil
+			}
+		}),
+	}
+	tf.Namespace = "test"
+	buf := bytes.NewBuffer([]byte{})
+
+	cmd := NewCmdApply(f, buf)
+	cmd.Flags().Set("filename", filenameRC)
+	cmd.Flags().Set("output", "name")
+	cmd.Run(cmd, []string{})
+
+	if !retry || getCount != 2 {
+		t.Fatalf("apply didn't retry when get conflict error")
+	}
+
+	// uses the name from the file, not the response
+	expectRC := "replicationcontroller/" + nameRC + "\n"
+	if buf.String() != expectRC {
+		t.Fatalf("unexpected output: %s\nexpected: %s", buf.String(), expectRC)
+	}
+}
+
 func TestApplyNonExistObject(t *testing.T) {
 	nameRC, currentRC := readAndAnnotateReplicationController(t, filenameRC)
 	pathRC := "/namespaces/test/replicationcontrollers"
 	pathNameRC := pathRC + "/" + nameRC
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, _, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
+			case p == "/api/v1/namespaces/test" && m == "GET":
+				return &http.Response{StatusCode: 404, Header: defaultHeader(), Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
 			case p == pathNameRC && m == "GET":
-				return &http.Response{StatusCode: 404, Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
+				return &http.Response{StatusCode: 404, Header: defaultHeader(), Body: ioutil.NopCloser(bytes.NewReader(nil))}, nil
 			case p == pathRC && m == "POST":
 				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
-				return &http.Response{StatusCode: 201, Body: bodyRC}, nil
+				return &http.Response{StatusCode: 201, Header: defaultHeader(), Body: bodyRC}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -261,26 +326,26 @@ func testApplyMultipleObjects(t *testing.T, asList bool) {
 	nameSVC, currentSVC := readAndAnnotateService(t, filenameSVC)
 	pathSVC := "/namespaces/test/services/" + nameSVC
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, _, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == pathRC && m == "GET":
 				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
-				return &http.Response{StatusCode: 200, Body: bodyRC}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodyRC}, nil
 			case p == pathRC && m == "PATCH":
 				validatePatchApplication(t, req)
 				bodyRC := ioutil.NopCloser(bytes.NewReader(currentRC))
-				return &http.Response{StatusCode: 200, Body: bodyRC}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodyRC}, nil
 			case p == pathSVC && m == "GET":
 				bodySVC := ioutil.NopCloser(bytes.NewReader(currentSVC))
-				return &http.Response{StatusCode: 200, Body: bodySVC}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodySVC}, nil
 			case p == pathSVC && m == "PATCH":
 				validatePatchApplication(t, req)
 				bodySVC := ioutil.NopCloser(bytes.NewReader(currentSVC))
-				return &http.Response{StatusCode: 200, Body: bodySVC}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: bodySVC}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil

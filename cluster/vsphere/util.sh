@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -220,7 +220,7 @@ function kube-run {
 
 #
 # run the command remotely and check if the specific kube artifact is running or not.
-# keep checking till the you hit the timeout. default timeout 300s
+# keep checking till the you hit the timeout. Default timeout 300s
 #
 # Usage:
 #   kube_check 10.0.0.1 cmd timeout
@@ -263,7 +263,7 @@ function kube-check {
 }
 
 #
-# verify if salt master is up. check 30 times and then echo out bad output and return 0
+# verify if salt master is up. Check 30 times and then echo out bad output and return 0
 #
 # Usage:
 #   remote-pgrep 10.0.0.1 salt-master
@@ -326,10 +326,12 @@ function setup-pod-routes {
   done
 
 
-  # make the pods visible to each other.
+  # Make the pods visible to each other and to the master.
+  # The master needs have routes to the pods for the UI to work.
   local j
   for (( i=0; i<${#NODE_NAMES[@]}; i++)); do
      printf "setting up routes for ${NODE_NAMES[$i]}"
+     kube-ssh "${KUBE_MASTER_IP}" "sudo route add -net ${KUBE_NODE_BRIDGE_NETWORK[${i}]} gw ${KUBE_NODE_IP_ADDRESSES[${i}]}"
      for (( j=0; j<${#NODE_NAMES[@]}; j++)); do
         if [[ $i != $j ]]; then
            kube-ssh ${KUBE_NODE_IP_ADDRESSES[$i]} "sudo route add -net ${KUBE_NODE_BRIDGE_NETWORK[$j]} gw ${KUBE_NODE_IP_ADDRESSES[$j]}"
@@ -355,6 +357,18 @@ function kube-up {
   local htpasswd
   htpasswd=$(cat "${KUBE_TEMP}/htpasswd")
 
+  # This calculation of the service IP should work, but if you choose an
+  # alternate subnet, there's a small chance you'd need to modify the
+  # service_ip, below.  We'll choose an IP like 10.244.240.1 by taking
+  # the first three octets of the SERVICE_CLUSTER_IP_RANGE and tacking
+  # on a .1
+  local octets
+  local service_ip
+  octets=($(echo "${SERVICE_CLUSTER_IP_RANGE}" | sed -e 's|/.*||' -e 's/\./ /g'))
+  ((octets[3]+=1))
+  service_ip=$(echo "${octets[*]}" | sed 's/ /./g')
+  MASTER_EXTRA_SANS="IP:${service_ip},DNS:${MASTER_NAME},${MASTER_EXTRA_SANS}"
+
   echo "Starting master VM (this can take a minute)..."
 
   (
@@ -371,6 +385,7 @@ function kube-up {
     echo "readonly ENABLE_NODE_LOGGING='${ENABLE_NODE_LOGGING:-false}'"
     echo "readonly LOGGING_DESTINATION='${LOGGING_DESTINATION:-}'"
     echo "readonly ENABLE_CLUSTER_DNS='${ENABLE_CLUSTER_DNS:-false}'"
+    echo "readonly ENABLE_CLUSTER_UI='${ENABLE_CLUSTER_UI:-false}'"
     echo "readonly DNS_SERVER_IP='${DNS_SERVER_IP:-}'"
     echo "readonly DNS_DOMAIN='${DNS_DOMAIN:-}'"
     echo "readonly KUBE_USER='${KUBE_USER:-}'"
@@ -379,6 +394,7 @@ function kube-up {
     echo "readonly SALT_TAR='${SALT_TAR##*/}'"
     echo "readonly MASTER_HTPASSWD='${htpasswd}'"
     echo "readonly E2E_STORAGE_TEST_ENVIRONMENT='${E2E_STORAGE_TEST_ENVIRONMENT:-}'"
+    echo "readonly MASTER_EXTRA_SANS='${MASTER_EXTRA_SANS:-}'"
     grep -v "^#" "${KUBE_ROOT}/cluster/vsphere/templates/create-dynamic-salt-files.sh"
     grep -v "^#" "${KUBE_ROOT}/cluster/vsphere/templates/install-release.sh"
     grep -v "^#" "${KUBE_ROOT}/cluster/vsphere/templates/salt-master.sh"

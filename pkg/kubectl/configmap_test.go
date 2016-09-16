@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -90,6 +90,21 @@ func TestConfigMapGenerate(t *testing.T) {
 				"from-file": []string{"key1==value"},
 			},
 			expectErr: true,
+		},
+		{
+			params: map[string]interface{}{
+				"name":         "foo",
+				"from-literal": []string{"key1==value1"},
+			},
+			expected: &api.ConfigMap{
+				ObjectMeta: api.ObjectMeta{
+					Name: "foo",
+				},
+				Data: map[string]string{
+					"key1": "=value1",
+				},
+			},
+			expectErr: false,
 		},
 	}
 	generator := ConfigMapGeneratorV1{}

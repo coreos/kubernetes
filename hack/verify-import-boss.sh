@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +19,10 @@ set -o nounset
 set -o pipefail
 
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
-
-KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
 source "${KUBE_ROOT}/hack/lib/init.sh"
 
 kube::golang::setup_env
 
-"${KUBE_ROOT}/hack/build-go.sh" cmd/libs/go2idl/import-boss
+make -C "${KUBE_ROOT}" WHAT=cmd/libs/go2idl/import-boss
 
-"${KUBE_ROOT}/hack/after-build/run-import-boss.sh" --verify-only
+$(kube::util::find-binary "import-boss") --verify-only

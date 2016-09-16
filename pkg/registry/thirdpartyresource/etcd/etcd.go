@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,47 +19,46 @@ package etcd
 import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/apis/extensions"
-	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/generic"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/registry/thirdpartyresource"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
 // REST implements a RESTStorage for ThirdPartyResources against etcd
 type REST struct {
-	*etcdgeneric.Etcd
+	*registry.Store
 }
 
 // NewREST returns a registry which will store ThirdPartyResource in the given helper
 func NewREST(opts generic.RESTOptions) *REST {
-	prefix := "/thirdpartyresources"
+	prefix := "/" + opts.ResourcePrefix
 
 	// We explicitly do NOT do any decoration here yet.
-	storageInterface := opts.Storage
+	storageInterface, dFunc := generic.NewRawStorage(opts.StorageConfig)
 
-	store := &etcdgeneric.Etcd{
+	store := &registry.Store{
 		NewFunc:     func() runtime.Object { return &extensions.ThirdPartyResource{} },
 		NewListFunc: func() runtime.Object { return &extensions.ThirdPartyResourceList{} },
 		KeyRootFunc: func(ctx api.Context) string {
-			return etcdgeneric.NamespaceKeyRootFunc(ctx, prefix)
+			return prefix
 		},
 		KeyFunc: func(ctx api.Context, id string) (string, error) {
-			return etcdgeneric.NamespaceKeyFunc(ctx, prefix, id)
+			return registry.NoNamespaceKeyFunc(ctx, prefix, id)
 		},
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
 			return obj.(*extensions.ThirdPartyResource).Name, nil
 		},
-		PredicateFunc: func(label labels.Selector, field fields.Selector) generic.Matcher {
-			return thirdpartyresource.Matcher(label, field)
-		},
+		PredicateFunc:           thirdpartyresource.Matcher,
 		QualifiedResource:       extensions.Resource("thirdpartyresources"),
+		EnableGarbageCollection: opts.EnableGarbageCollection,
 		DeleteCollectionWorkers: opts.DeleteCollectionWorkers,
 		CreateStrategy:          thirdpartyresource.Strategy,
 		UpdateStrategy:          thirdpartyresource.Strategy,
+		DeleteStrategy:          thirdpartyresource.Strategy,
 
-		Storage: storageInterface,
+		Storage:     storageInterface,
+		DestroyFunc: dFunc,
 	}
 
 	return &REST{store}

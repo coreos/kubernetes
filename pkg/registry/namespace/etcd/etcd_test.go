@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import (
 
 func newStorage(t *testing.T) (*REST, *etcdtesting.EtcdTestServer) {
 	etcdStorage, server := registrytest.NewEtcdStorage(t, "")
-	restOptions := generic.RESTOptions{etcdStorage, generic.UndecoratedStorage, 1}
+	restOptions := generic.RESTOptions{StorageConfig: etcdStorage, Decorator: generic.UndecoratedStorage, DeleteCollectionWorkers: 1, ResourcePrefix: "namespaces"}
 	namespaceStorage, _, _ := NewREST(restOptions)
 	return namespaceStorage, server
 }
@@ -47,7 +47,8 @@ func validNewNamespace() *api.Namespace {
 func TestCreate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd).ClusterScope()
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store).ClusterScope()
 	namespace := validNewNamespace()
 	namespace.ObjectMeta = api.ObjectMeta{GenerateName: "foo"}
 	test.TestCreate(
@@ -63,6 +64,7 @@ func TestCreate(t *testing.T) {
 func TestCreateSetsFields(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
+	defer storage.Store.DestroyFunc()
 	namespace := validNewNamespace()
 	ctx := api.NewContext()
 	_, err := storage.Create(ctx, namespace)
@@ -89,28 +91,32 @@ func TestCreateSetsFields(t *testing.T) {
 func TestDelete(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd).ClusterScope().ReturnDeletedObject()
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store).ClusterScope().ReturnDeletedObject()
 	test.TestDelete(validNewNamespace())
 }
 
 func TestGet(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd).ClusterScope()
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store).ClusterScope()
 	test.TestGet(validNewNamespace())
 }
 
 func TestList(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd).ClusterScope()
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store).ClusterScope()
 	test.TestList(validNewNamespace())
 }
 
 func TestWatch(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd).ClusterScope()
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store).ClusterScope()
 	test.TestWatch(
 		validNewNamespace(),
 		// matching labels
@@ -134,6 +140,7 @@ func TestWatch(t *testing.T) {
 func TestDeleteNamespaceWithIncompleteFinalizers(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
+	defer storage.Store.DestroyFunc()
 	key := etcdtest.AddPrefix("namespaces/foo")
 	ctx := api.NewContext()
 	now := unversioned.Now()
@@ -147,7 +154,7 @@ func TestDeleteNamespaceWithIncompleteFinalizers(t *testing.T) {
 		},
 		Status: api.NamespaceStatus{Phase: api.NamespaceActive},
 	}
-	if err := storage.Storage.Set(ctx, key, namespace, nil, 0); err != nil {
+	if err := storage.Storage.Create(ctx, key, namespace, nil, 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := storage.Delete(ctx, "foo", nil); err == nil {
@@ -158,6 +165,7 @@ func TestDeleteNamespaceWithIncompleteFinalizers(t *testing.T) {
 func TestDeleteNamespaceWithCompleteFinalizers(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
+	defer storage.Store.DestroyFunc()
 	key := etcdtest.AddPrefix("namespaces/foo")
 	ctx := api.NewContext()
 	now := unversioned.Now()
@@ -171,7 +179,7 @@ func TestDeleteNamespaceWithCompleteFinalizers(t *testing.T) {
 		},
 		Status: api.NamespaceStatus{Phase: api.NamespaceActive},
 	}
-	if err := storage.Storage.Set(ctx, key, namespace, nil, 0); err != nil {
+	if err := storage.Storage.Create(ctx, key, namespace, nil, 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := storage.Delete(ctx, "foo", nil); err != nil {

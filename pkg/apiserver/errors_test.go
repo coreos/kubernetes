@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ func TestErrorsToAPIStatus(t *testing.T) {
 			Status:  unversioned.StatusFailure,
 			Code:    http.StatusConflict,
 			Reason:  "Conflict",
-			Message: "foos \"bar\" cannot be updated: failure",
+			Message: "Operation cannot be fulfilled on foos \"bar\": failure",
 			Details: &unversioned.StatusDetails{
 				Group: "",
 				Kind:  "foos",

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -54,17 +54,32 @@ func New() *Generator {
 		OutputBase:       sourceTree,
 		GoHeaderFilePath: filepath.Join(sourceTree, "k8s.io/kubernetes/hack/boilerplate/boilerplate.go.txt"),
 	}
-	defaultProtoImport := filepath.Join(sourceTree, "k8s.io", "kubernetes", "Godeps", "_workspace", "src", "github.com", "gogo", "protobuf", "protobuf")
+	defaultProtoImport := filepath.Join(sourceTree, "k8s.io", "kubernetes", "vendor", "github.com", "gogo", "protobuf", "protobuf")
 	return &Generator{
 		Common:      common,
 		OutputBase:  sourceTree,
 		ProtoImport: []string{defaultProtoImport},
-		Packages: `+k8s.io/kubernetes/pkg/util/intstr,` +
-			`+k8s.io/kubernetes/pkg/api/resource,` +
-			`+k8s.io/kubernetes/pkg/runtime,` +
-			`k8s.io/kubernetes/pkg/api/unversioned,` +
-			`k8s.io/kubernetes/pkg/api/v1,` +
+		Packages: strings.Join([]string{
+			`+k8s.io/kubernetes/pkg/util/intstr`,
+			`+k8s.io/kubernetes/pkg/api/resource`,
+			`+k8s.io/kubernetes/pkg/runtime`,
+			`+k8s.io/kubernetes/pkg/watch/versioned`,
+			`k8s.io/kubernetes/pkg/api/unversioned`,
+			`k8s.io/kubernetes/pkg/api/v1`,
+			`k8s.io/kubernetes/pkg/apis/policy/v1alpha1`,
 			`k8s.io/kubernetes/pkg/apis/extensions/v1beta1`,
+			`k8s.io/kubernetes/pkg/apis/autoscaling/v1`,
+			`k8s.io/kubernetes/pkg/apis/authorization/v1beta1`,
+			`k8s.io/kubernetes/pkg/apis/batch/v1`,
+			`k8s.io/kubernetes/pkg/apis/batch/v2alpha1`,
+			`k8s.io/kubernetes/pkg/apis/apps/v1alpha1`,
+			`k8s.io/kubernetes/pkg/apis/authentication/v1beta1`,
+			`k8s.io/kubernetes/pkg/apis/rbac/v1alpha1`,
+			`k8s.io/kubernetes/federation/apis/federation/v1beta1`,
+			`k8s.io/kubernetes/pkg/apis/certificates/v1alpha1`,
+			`k8s.io/kubernetes/pkg/apis/imagepolicy/v1alpha1`,
+			`k8s.io/kubernetes/pkg/apis/storage/v1beta1`,
+		}, ","),
 		DropEmbeddedFields: "k8s.io/kubernetes/pkg/api/unversioned.TypeMeta",
 	}
 }
@@ -123,6 +138,9 @@ func Run(g *Generator) {
 			d = d[1:]
 			outputPackage = false
 		}
+		if strings.Contains(d, "-") {
+			log.Fatalf("Package names must be valid protobuf package identifiers, which allow only [a-z0-9_]: %s", d)
+		}
 		name := protoSafePackage(d)
 		parts := strings.SplitN(d, "=", 2)
 		if len(parts) > 1 {
@@ -165,12 +183,12 @@ func Run(g *Generator) {
 		},
 		"public",
 	)
-	c.Verify = g.Common.VerifyOnly
-	c.FileTypes["protoidl"] = NewProtoFile()
-
 	if err != nil {
 		log.Fatalf("Failed making a context: %v", err)
 	}
+
+	c.Verify = g.Common.VerifyOnly
+	c.FileTypes["protoidl"] = NewProtoFile()
 
 	if err := protobufNames.AssignTypesToPackages(c); err != nil {
 		log.Fatalf("Failed to identify Common types: %v", err)
@@ -225,7 +243,7 @@ func Run(g *Generator) {
 
 		// alter the generated protobuf file to remove the generated types (but leave the serializers) and rewrite the
 		// package statement to match the desired package name
-		if err := RewriteGeneratedGogoProtobufFile(outputPath, p.ExtractGeneratedType, buf.Bytes()); err != nil {
+		if err := RewriteGeneratedGogoProtobufFile(outputPath, p.ExtractGeneratedType, p.OptionalTypeName, buf.Bytes()); err != nil {
 			log.Fatalf("Unable to rewrite generated %s: %v", outputPath, err)
 		}
 

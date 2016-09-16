@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -295,10 +295,22 @@ func TestLabelErrors(t *testing.T) {
 			args:  []string{"pods=bar"},
 			errFn: func(err error) bool { return strings.Contains(err.Error(), "one or more resources must be specified") },
 		},
+		"resources but no selectors": {
+			args: []string{"pods", "app=bar"},
+			errFn: func(err error) bool {
+				return strings.Contains(err.Error(), "resource(s) were provided, but no name, label selector, or --all flag specified")
+			},
+		},
+		"multiple resources but no selectors": {
+			args: []string{"pods,deployments", "app=bar"},
+			errFn: func(err error) bool {
+				return strings.Contains(err.Error(), "resource(s) were provided, but no name, label selector, or --all flag specified")
+			},
+		},
 	}
 
 	for k, testCase := range testCases {
-		f, tf, _ := NewAPIFactory()
+		f, tf, _, _ := NewAPIFactory()
 		tf.Printer = &testPrinter{}
 		tf.Namespace = "test"
 		tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
@@ -326,23 +338,23 @@ func TestLabelErrors(t *testing.T) {
 
 func TestLabelForResourceFromFile(t *testing.T) {
 	pods, _, _ := testData()
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.Method {
 			case "GET":
 				switch req.URL.Path {
-				case "/namespaces/test/pods/cassandra":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+				case "/namespaces/test/replicationcontrollers/cassandra":
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
 				}
 			case "PATCH":
 				switch req.URL.Path {
-				case "/namespaces/test/pods/cassandra":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+				case "/namespaces/test/replicationcontrollers/cassandra":
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -359,7 +371,7 @@ func TestLabelForResourceFromFile(t *testing.T) {
 	buf := bytes.NewBuffer([]byte{})
 	cmd := NewCmdLabel(f, buf)
 	options := &LabelOptions{
-		Filenames: []string{"../../../examples/cassandra/cassandra.yaml"},
+		Filenames: []string{"../../../examples/storage/cassandra/cassandra-controller.yaml"},
 	}
 
 	err := RunLabel(f, buf, cmd, []string{"a=b"}, options)
@@ -373,15 +385,15 @@ func TestLabelForResourceFromFile(t *testing.T) {
 
 func TestLabelMultipleObjects(t *testing.T) {
 	pods, _, _ := testData()
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.Method {
 			case "GET":
 				switch req.URL.Path {
 				case "/namespaces/test/pods":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, pods)}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -389,9 +401,9 @@ func TestLabelMultipleObjects(t *testing.T) {
 			case "PATCH":
 				switch req.URL.Path {
 				case "/namespaces/test/pods/foo":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				case "/namespaces/test/pods/bar":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[1])}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[1])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,49 +17,62 @@ limitations under the License.
 package rest
 
 import (
-	"k8s.io/kubernetes/cmd/libs/go2idl/client-gen/testdata/apis/testgroup"
+	"fmt"
+
+	"k8s.io/kubernetes/cmd/libs/go2idl/client-gen/test_apis/testgroup.k8s.io"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/generic"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/storage"
+	"k8s.io/kubernetes/pkg/storage/storagebackend"
 )
 
 type REST struct {
-	*etcdgeneric.Etcd
+	*registry.Store
 }
 
 // NewREST returns a RESTStorage object that will work with testtype.
-func NewREST(s storage.Interface, storageDecorator generic.StorageDecorator) *REST {
+func NewREST(config *storagebackend.Config, storageDecorator generic.StorageDecorator) *REST {
 	prefix := "/testtype"
 	newListFunc := func() runtime.Object { return &testgroup.TestTypeList{} }
 	// Usually you should reuse your RESTCreateStrategy.
 	strategy := &NotNamespaceScoped{}
-	storageInterface := storageDecorator(
-		s, 100, &testgroup.TestType{}, prefix, strategy, newListFunc)
-	store := &etcdgeneric.Etcd{
+	storageInterface, _ := storageDecorator(
+		config, 100, &testgroup.TestType{}, prefix, strategy, newListFunc, storage.NoTriggerPublisher)
+	store := &registry.Store{
 		NewFunc: func() runtime.Object { return &testgroup.TestType{} },
 		// NewListFunc returns an object capable of storing results of an etcd list.
 		NewListFunc: newListFunc,
 		// Produces a path that etcd understands, to the root of the resource
 		// by combining the namespace in the context with the given prefix.
 		KeyRootFunc: func(ctx api.Context) string {
-			return etcdgeneric.NamespaceKeyRootFunc(ctx, prefix)
+			return registry.NamespaceKeyRootFunc(ctx, prefix)
 		},
 		// Produces a path that etcd understands, to the resource by combining
 		// the namespace in the context with the given prefix.
 		KeyFunc: func(ctx api.Context, name string) (string, error) {
-			return etcdgeneric.NamespaceKeyFunc(ctx, prefix, name)
+			return registry.NamespaceKeyFunc(ctx, prefix, name)
 		},
 		// Retrieve the name field of the resource.
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
 			return obj.(*testgroup.TestType).Name, nil
 		},
 		// Used to match objects based on labels/fields for list.
-		PredicateFunc: func(label labels.Selector, field fields.Selector) generic.Matcher {
-			return generic.MatcherFunc(nil)
+		PredicateFunc: func(label labels.Selector, field fields.Selector) *generic.SelectionPredicate {
+			return &generic.SelectionPredicate{
+				Label: label,
+				Field: field,
+				GetAttrs: func(obj runtime.Object) (labels.Set, fields.Set, error) {
+					testType, ok := obj.(*testgroup.TestType)
+					if !ok {
+						return nil, nil, fmt.Errorf("unexpected type of given object")
+					}
+					return labels.Set(testType.ObjectMeta.Labels), fields.Set{}, nil
+				},
+			}
 		},
 		Storage: storageInterface,
 	}

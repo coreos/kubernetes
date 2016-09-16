@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -138,6 +138,7 @@ func (w *worker) stop() {
 // doProbe probes the container once and records the result.
 // Returns whether the worker should continue.
 func (w *worker) doProbe() (keepGoing bool) {
+	defer func() { recover() }() // Actually eat panics (HandleCrash takes care of logging)
 	defer runtime.HandleCrash(func(_ interface{}) { keepGoing = true })
 
 	status, ok := w.probeManager.statusManager.GetPodStatus(w.pod.UID)
@@ -188,7 +189,7 @@ func (w *worker) doProbe() (keepGoing bool) {
 			w.pod.Spec.RestartPolicy != api.RestartPolicyNever
 	}
 
-	if int(time.Since(c.State.Running.StartedAt.Time).Seconds()) < w.spec.InitialDelaySeconds {
+	if int32(time.Since(c.State.Running.StartedAt.Time).Seconds()) < w.spec.InitialDelaySeconds {
 		return true
 	}
 
@@ -205,8 +206,8 @@ func (w *worker) doProbe() (keepGoing bool) {
 		w.resultRun = 1
 	}
 
-	if (result == results.Failure && w.resultRun < w.spec.FailureThreshold) ||
-		(result == results.Success && w.resultRun < w.spec.SuccessThreshold) {
+	if (result == results.Failure && w.resultRun < int(w.spec.FailureThreshold)) ||
+		(result == results.Success && w.resultRun < int(w.spec.SuccessThreshold)) {
 		// Success or failure is below threshold - leave the probe state unchanged.
 		return true
 	}

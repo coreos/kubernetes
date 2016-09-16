@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/golang/glog"
 
 	"k8s.io/kubernetes/cmd/libs/go2idl/generator"
 	"k8s.io/kubernetes/cmd/libs/go2idl/namer"
@@ -51,6 +53,8 @@ func (g *genProtoIDL) PackageVars(c *generator.Context) []string {
 	return []string{
 		"option (gogoproto.marshaler_all) = true;",
 		"option (gogoproto.sizer_all) = true;",
+		"option (gogoproto.goproto_stringer_all) = false;",
+		"option (gogoproto.stringer_all) = true;",
 		"option (gogoproto.unmarshaler_all) = true;",
 		"option (gogoproto.goproto_unrecognized_all) = false;",
 		"option (gogoproto.goproto_enum_prefix_all) = false;",
@@ -70,13 +74,20 @@ func (g *genProtoIDL) Namers(c *generator.Context) namer.NameSystems {
 
 // Filter ignores types that are identified as not exportable.
 func (g *genProtoIDL) Filter(c *generator.Context, t *types.Type) bool {
-	flags := types.ExtractCommentTags("+", t.CommentLines)
-	switch {
-	case flags["protobuf"] == "false":
-		return false
-	case flags["protobuf"] == "true":
-		return true
-	case !g.generateAll:
+	tagVals := types.ExtractCommentTags("+", t.CommentLines)["protobuf"]
+	if tagVals != nil {
+		if tagVals[0] == "false" {
+			// Type specified "false".
+			return false
+		}
+		if tagVals[0] == "true" {
+			// Type specified "true".
+			return true
+		}
+		glog.Fatalf(`Comment tag "protobuf" must be true or false, found: %q`, tagVals[0])
+	}
+	if !g.generateAll {
+		// We're not generating everything.
 		return false
 	}
 	seen := map[*types.Type]bool{}
@@ -118,6 +129,19 @@ func isProtoable(seen map[*types.Type]bool, t *types.Type) bool {
 	}
 }
 
+// isOptionalAlias should return true if the specified type has an underlying type
+// (is an alias) of a map or slice and has the comment tag protobuf.nullable=true,
+// indicating that the type should be nullable in protobuf.
+func isOptionalAlias(t *types.Type) bool {
+	if t.Underlying == nil || (t.Underlying.Kind != types.Map && t.Underlying.Kind != types.Slice) {
+		return false
+	}
+	if extractBoolTagOrDie("protobuf.nullable", t.CommentLines) == false {
+		return false
+	}
+	return true
+}
+
 func (g *genProtoIDL) Imports(c *generator.Context) (imports []string) {
 	lines := []string{}
 	// TODO: this could be expressed more cleanly
@@ -135,8 +159,9 @@ func (g *genProtoIDL) GenerateType(c *generator.Context, t *types.Type, w io.Wri
 	sw := generator.NewSnippetWriter(w, c, "$", "$")
 	b := bodyGen{
 		locator: &protobufLocator{
-			namer:   c.Namers["proto"].(ProtobufFromGoNamer),
-			tracker: g.imports,
+			namer:    c.Namers["proto"].(ProtobufFromGoNamer),
+			tracker:  g.imports,
+			universe: c.Universe,
 
 			localGoPackage: g.localGoPackage.Package,
 		},
@@ -148,12 +173,13 @@ func (g *genProtoIDL) GenerateType(c *generator.Context, t *types.Type, w io.Wri
 		t: t,
 	}
 	switch t.Kind {
+	case types.Alias:
+		return b.doAlias(sw)
 	case types.Struct:
 		return b.doStruct(sw)
 	default:
 		return b.unknown(sw)
 	}
-	return sw.Error()
 }
 
 // ProtobufFromGoNamer finds the protobuf name of a type (and its package, and
@@ -164,12 +190,14 @@ type ProtobufFromGoNamer interface {
 
 type ProtobufLocator interface {
 	ProtoTypeFor(t *types.Type) (*types.Type, error)
+	GoTypeForName(name types.Name) *types.Type
 	CastTypeName(name types.Name) string
 }
 
 type protobufLocator struct {
-	namer   ProtobufFromGoNamer
-	tracker namer.ImportTracker
+	namer    ProtobufFromGoNamer
+	tracker  namer.ImportTracker
+	universe types.Universe
 
 	localGoPackage string
 }
@@ -181,6 +209,13 @@ func (p protobufLocator) CastTypeName(name types.Name) string {
 		return name.Name
 	}
 	return name.String()
+}
+
+func (p protobufLocator) GoTypeForName(name types.Name) *types.Type {
+	if len(name.Package) == 0 {
+		name.Package = p.localGoPackage
+	}
+	return p.universe.Type(name)
 }
 
 // ProtoTypeFor locates a Protobuf type for the provided Go type (if possible).
@@ -197,7 +232,7 @@ func (p protobufLocator) ProtoTypeFor(t *types.Type) (*types.Type, error) {
 		return t, nil
 	}
 	// it's a message
-	if t.Kind == types.Struct {
+	if t.Kind == types.Struct || isOptionalAlias(t) {
 		t := &types.Type{
 			Name: p.namer.GoNameToProtoName(t.Name),
 			Kind: types.Protobuf,
@@ -223,6 +258,37 @@ func (b bodyGen) unknown(sw *generator.SnippetWriter) error {
 	return fmt.Errorf("not sure how to generate: %#v", b.t)
 }
 
+func (b bodyGen) doAlias(sw *generator.SnippetWriter) error {
+	if !isOptionalAlias(b.t) {
+		return nil
+	}
+
+	var kind string
+	switch b.t.Underlying.Kind {
+	case types.Map:
+		kind = "map"
+	default:
+		kind = "slice"
+	}
+	optional := &types.Type{
+		Name: b.t.Name,
+		Kind: types.Struct,
+
+		CommentLines:              b.t.CommentLines,
+		SecondClosestCommentLines: b.t.SecondClosestCommentLines,
+		Members: []types.Member{
+			{
+				Name:         "Items",
+				CommentLines: []string{fmt.Sprintf("items, if empty, will result in an empty %s\n", kind)},
+				Type:         b.t.Underlying,
+			},
+		},
+	}
+	nested := b
+	nested.t = optional
+	return nested.doStruct(sw)
+}
+
 func (b bodyGen) doStruct(sw *generator.SnippetWriter) error {
 	if len(b.t.Name.Name) == 0 {
 		return nil
@@ -231,6 +297,7 @@ func (b bodyGen) doStruct(sw *generator.SnippetWriter) error {
 		return nil
 	}
 
+	var alias *types.Type
 	var fields []protoField
 	options := []string{}
 	allOptions := types.ExtractCommentTags("+", b.t.CommentLines)
@@ -240,7 +307,7 @@ func (b bodyGen) doStruct(sw *generator.SnippetWriter) error {
 			key := strings.TrimPrefix(k, "protobuf.options.")
 			switch key {
 			case "marshal":
-				if v == "false" {
+				if v[0] == "false" {
 					if !b.omitGogo {
 						options = append(options,
 							"(gogoproto.marshaler) = false",
@@ -251,17 +318,28 @@ func (b bodyGen) doStruct(sw *generator.SnippetWriter) error {
 				}
 			default:
 				if !b.omitGogo || !strings.HasPrefix(key, "(gogoproto.") {
-					options = append(options, fmt.Sprintf("%s = %s", key, v))
+					if key == "(gogoproto.goproto_stringer)" && v[0] == "false" {
+						options = append(options, "(gogoproto.stringer) = false")
+					}
+					options = append(options, fmt.Sprintf("%s = %s", key, v[0]))
 				}
 			}
+		// protobuf.as allows a type to have the same message contents as another Go type
+		case k == "protobuf.as":
+			fields = nil
+			if alias = b.locator.GoTypeForName(types.Name{Name: v[0]}); alias == nil {
+				return fmt.Errorf("type %v references alias %q which does not exist", b.t, v[0])
+			}
+		// protobuf.embed instructs the generator to use the named type in this package
+		// as an embedded message.
 		case k == "protobuf.embed":
 			fields = []protoField{
 				{
 					Tag:  1,
-					Name: v,
+					Name: v[0],
 					Type: &types.Type{
 						Name: types.Name{
-							Name:    v,
+							Name:    v[0],
 							Package: b.localPackage.Package,
 							Path:    b.localPackage.Path,
 						},
@@ -270,10 +348,13 @@ func (b bodyGen) doStruct(sw *generator.SnippetWriter) error {
 			}
 		}
 	}
+	if alias == nil {
+		alias = b.t
+	}
 
 	// If we don't explicitly embed anything, generate fields by traversing fields.
 	if fields == nil {
-		memberFields, err := membersToFields(b.locator, b.t, b.localPackage, b.omitFieldTypes)
+		memberFields, err := membersToFields(b.locator, alias, b.localPackage, b.omitFieldTypes)
 		if err != nil {
 			return fmt.Errorf("type %v cannot be converted to protobuf: %v", b.t, err)
 		}
@@ -343,7 +424,7 @@ type protoField struct {
 	Nullable bool
 	Extras   map[string]string
 
-	CommentLines string
+	CommentLines []string
 }
 
 var (
@@ -400,7 +481,7 @@ func memberTypeToProtobufField(locator ProtobufLocator, field *protoField, t *ty
 		if err := memberTypeToProtobufField(locator, keyField, t.Key); err != nil {
 			return err
 		}
-		// All other protobuf types has kind types.Protobuf, so setting types.Map
+		// All other protobuf types have kind types.Protobuf, so setting types.Map
 		// here would be very misleading.
 		field.Type = &types.Type{
 			Kind: types.Protobuf,
@@ -423,14 +504,19 @@ func memberTypeToProtobufField(locator ProtobufLocator, field *protoField, t *ty
 		}
 		field.Nullable = true
 	case types.Alias:
-		if err := memberTypeToProtobufField(locator, field, t.Underlying); err != nil {
-			log.Printf("failed to alias: %s %s: err", t.Name, t.Underlying.Name, err)
-			return err
+		if isOptionalAlias(t) {
+			field.Type, err = locator.ProtoTypeFor(t)
+			field.Nullable = true
+		} else {
+			if err := memberTypeToProtobufField(locator, field, t.Underlying); err != nil {
+				log.Printf("failed to alias: %s %s: err %v", t.Name, t.Underlying.Name, err)
+				return err
+			}
+			if field.Extras == nil {
+				field.Extras = make(map[string]string)
+			}
+			field.Extras["(gogoproto.casttype)"] = strconv.Quote(locator.CastTypeName(t.Name))
 		}
-		if field.Extras == nil {
-			field.Extras = make(map[string]string)
-		}
-		field.Extras["(gogoproto.casttype)"] = strconv.Quote(locator.CastTypeName(t.Name))
 	case types.Slice:
 		if t.Elem.Name.Name == "byte" && len(t.Elem.Name.Package) == 0 {
 			field.Type = &types.Type{Name: types.Name{Name: "bytes"}, Kind: types.Protobuf}
@@ -454,7 +540,7 @@ func memberTypeToProtobufField(locator ProtobufLocator, field *protoField, t *ty
 
 // protobufTagToField extracts information from an existing protobuf tag
 func protobufTagToField(tag string, field *protoField, m types.Member, t *types.Type, localPackage types.Name) error {
-	if len(tag) == 0 {
+	if len(tag) == 0 || tag == "-" {
 		return nil
 	}
 
@@ -508,6 +594,8 @@ func protobufTagToField(tag string, field *protoField, m types.Member, t *types.
 			return fmt.Errorf("member %q of %q malformed 'protobuf' tag, tag %d should be key=value, got %q\n", m.Name, t.Name, i+4, extra)
 		}
 		switch parts[0] {
+		case "name":
+			protoExtra[parts[0]] = parts[1]
 		case "casttype", "castkey", "castvalue":
 			parts[0] = fmt.Sprintf("(gogoproto.%s)", parts[0])
 			protoExtra[parts[0]] = parts[1]
@@ -594,7 +682,7 @@ func membersToFields(locator ProtobufLocator, t *types.Type, localPackage types.
 		tag := field.Tag
 		if tag != -1 {
 			if existing, ok := byTag[tag]; ok {
-				return nil, fmt.Errorf("field %q and %q in %q both have tag %d", field.Name, existing.Name, tag)
+				return nil, fmt.Errorf("field %q and %q both have tag %d", field.Name, existing.Name, tag)
 			}
 			byTag[tag] = field
 		}
@@ -615,8 +703,7 @@ func membersToFields(locator ProtobufLocator, t *types.Type, localPackage types.
 	return fields, nil
 }
 
-func genComment(out io.Writer, comment, indent string) {
-	lines := strings.Split(comment, "\n")
+func genComment(out io.Writer, lines []string, indent string) {
 	for {
 		l := len(lines)
 		if l == 0 || len(lines[l-1]) != 0 {
@@ -640,7 +727,7 @@ func assembleProtoFile(w io.Writer, f *generator.File) {
 	fmt.Fprint(w, "syntax = 'proto2';\n\n")
 
 	if len(f.PackageName) > 0 {
-		fmt.Fprintf(w, "package %v;\n\n", f.PackageName)
+		fmt.Fprintf(w, "package %s;\n\n", f.PackageName)
 	}
 
 	if len(f.Imports) > 0 {

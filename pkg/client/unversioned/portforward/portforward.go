@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/kubelet/server/portforward"
 	"k8s.io/kubernetes/pkg/util/httpstream"
@@ -46,6 +45,8 @@ type PortForwarder struct {
 	Ready         chan struct{}
 	requestIDLock sync.Mutex
 	requestID     int
+	out           io.Writer
+	errOut        io.Writer
 }
 
 // ForwardedPort contains a Local:Remote port pairing.
@@ -107,7 +108,7 @@ func parsePorts(ports []string) ([]ForwardedPort, error) {
 }
 
 // New creates a new PortForwarder.
-func New(dialer httpstream.Dialer, ports []string, stopChan <-chan struct{}) (*PortForwarder, error) {
+func New(dialer httpstream.Dialer, ports []string, stopChan <-chan struct{}, readyChan chan struct{}, out, errOut io.Writer) (*PortForwarder, error) {
 	if len(ports) == 0 {
 		return nil, errors.New("You must specify at least 1 port")
 	}
@@ -119,7 +120,9 @@ func New(dialer httpstream.Dialer, ports []string, stopChan <-chan struct{}) (*P
 		dialer:   dialer,
 		ports:    parsedPorts,
 		stopChan: stopChan,
-		Ready:    make(chan struct{}),
+		Ready:    readyChan,
+		out:      out,
+		errOut:   errOut,
 	}, nil
 }
 
@@ -151,7 +154,9 @@ func (pf *PortForwarder) forward() error {
 		case err == nil:
 			listenSuccess = true
 		default:
-			glog.Warningf("Unable to listen on port %d: %v", port.Local, err)
+			if pf.errOut != nil {
+				fmt.Fprintf(pf.errOut, "Unable to listen on port %d: %v\n", port.Local, err)
+			}
 		}
 	}
 
@@ -159,7 +164,9 @@ func (pf *PortForwarder) forward() error {
 		return fmt.Errorf("Unable to listen on any of the requested ports: %v", pf.ports)
 	}
 
-	close(pf.Ready)
+	if pf.Ready != nil {
+		close(pf.Ready)
+	}
 
 	// wait for interrupt or conn closure
 	select {
@@ -210,7 +217,9 @@ func (pf *PortForwarder) getListener(protocol string, hostname string, port *For
 		return nil, fmt.Errorf("Error parsing local port: %s from %s (%s)", err, listenerAddress, host)
 	}
 	port.Local = uint16(localPortUInt)
-	glog.Infof("Forwarding from %s:%d -> %d", hostname, localPortUInt, port.Remote)
+	if pf.out != nil {
+		fmt.Fprintf(pf.out, "Forwarding from %s:%d -> %d\n", hostname, localPortUInt, port.Remote)
+	}
 
 	return listener, nil
 }
@@ -244,7 +253,9 @@ func (pf *PortForwarder) nextRequestID() int {
 func (pf *PortForwarder) handleConnection(conn net.Conn, port ForwardedPort) {
 	defer conn.Close()
 
-	glog.Infof("Handling connection for %d", port.Local)
+	if pf.out != nil {
+		fmt.Fprintf(pf.out, "Handling connection for %d\n", port.Local)
+	}
 
 	requestID := pf.nextRequestID()
 

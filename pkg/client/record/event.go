@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,16 +26,18 @@ import (
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/clock"
 	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
 	"k8s.io/kubernetes/pkg/watch"
+
+	"net/http"
 
 	"github.com/golang/glog"
 )
 
 const maxTriesPerEvent = 12
 
-var sleepDuration = 10 * time.Second
+var defaultSleepDuration = 10 * time.Second
 
 const maxQueuedEvents = 1000
 
@@ -93,11 +95,16 @@ type EventBroadcaster interface {
 
 // Creates a new event broadcaster.
 func NewBroadcaster() EventBroadcaster {
-	return &eventBroadcasterImpl{watch.NewBroadcaster(maxQueuedEvents, watch.DropIfChannelFull)}
+	return &eventBroadcasterImpl{watch.NewBroadcaster(maxQueuedEvents, watch.DropIfChannelFull), defaultSleepDuration}
+}
+
+func NewBroadcasterForTests(sleepDuration time.Duration) EventBroadcaster {
+	return &eventBroadcasterImpl{watch.NewBroadcaster(maxQueuedEvents, watch.DropIfChannelFull), sleepDuration}
 }
 
 type eventBroadcasterImpl struct {
 	*watch.Broadcaster
+	sleepDuration time.Duration
 }
 
 // StartRecordingToSink starts sending events received from the specified eventBroadcaster to the given sink.
@@ -107,14 +114,14 @@ func (eventBroadcaster *eventBroadcasterImpl) StartRecordingToSink(sink EventSin
 	// The default math/rand package functions aren't thread safe, so create a
 	// new Rand object for each StartRecording call.
 	randGen := rand.New(rand.NewSource(time.Now().UnixNano()))
-	eventCorrelator := NewEventCorrelator(util.RealClock{})
+	eventCorrelator := NewEventCorrelator(clock.RealClock{})
 	return eventBroadcaster.StartEventWatcher(
 		func(event *api.Event) {
-			recordToSink(sink, event, eventCorrelator, randGen)
+			recordToSink(sink, event, eventCorrelator, randGen, eventBroadcaster.sleepDuration)
 		})
 }
 
-func recordToSink(sink EventSink, event *api.Event, eventCorrelator *EventCorrelator, randGen *rand.Rand) {
+func recordToSink(sink EventSink, event *api.Event, eventCorrelator *EventCorrelator, randGen *rand.Rand, sleepDuration time.Duration) {
 	// Make a copy before modification, because there could be multiple listeners.
 	// Events are safe to copy like this.
 	eventCopy := *event
@@ -148,12 +155,11 @@ func recordToSink(sink EventSink, event *api.Event, eventCorrelator *EventCorrel
 
 func isKeyNotFoundError(err error) bool {
 	statusErr, _ := err.(*errors.StatusError)
-	// At the moment the server is returning 500 instead of a more specific
-	// error. When changing this remember that it should be backward compatible
-	// with old api servers that may be still returning 500.
-	if statusErr != nil && statusErr.Status().Code == 500 {
+
+	if statusErr != nil && statusErr.Status().Code == http.StatusNotFound {
 		return true
 	}
+
 	return false
 }
 
@@ -237,13 +243,13 @@ func (eventBroadcaster *eventBroadcasterImpl) StartEventWatcher(eventHandler fun
 
 // NewRecorder returns an EventRecorder that records events with the given event source.
 func (eventBroadcaster *eventBroadcasterImpl) NewRecorder(source api.EventSource) EventRecorder {
-	return &recorderImpl{source, eventBroadcaster.Broadcaster, util.RealClock{}}
+	return &recorderImpl{source, eventBroadcaster.Broadcaster, clock.RealClock{}}
 }
 
 type recorderImpl struct {
 	source api.EventSource
 	*watch.Broadcaster
-	clock util.Clock
+	clock clock.Clock
 }
 
 func (recorder *recorderImpl) generateEvent(object runtime.Object, timestamp unversioned.Time, eventtype, reason, message string) {
@@ -289,7 +295,7 @@ func (recorder *recorderImpl) PastEventf(object runtime.Object, timestamp unvers
 }
 
 func (recorder *recorderImpl) makeEvent(ref *api.ObjectReference, eventtype, reason, message string) *api.Event {
-	t := unversioned.Time{recorder.clock.Now()}
+	t := unversioned.Time{Time: recorder.clock.Now()}
 	namespace := ref.Namespace
 	if namespace == "" {
 		namespace = api.NamespaceDefault

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -62,6 +62,15 @@ if [[ "${validate_result}" == "1" ]]; then
 	exit 1
 elif [[ "${validate_result}" == "2" ]]; then
 	echo "...ignoring non-fatal errors in validate-cluster" >&2
+fi
+
+if [[ "${ENABLE_PROXY:-}" == "true" ]]; then
+  . /tmp/kube-proxy-env
+  echo ""
+  echo "*** Please run the following to add the kube-apiserver endpoint to your proxy white-list ***"
+  cat /tmp/kube-proxy-env
+  echo "***                                                                                      ***"
+  echo ""
 fi
 
 echo -e "Done, listing cluster services:\n" >&2

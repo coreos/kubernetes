@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -60,10 +60,11 @@ func (g *genClientset) Imports(c *generator.Context) (imports []string) {
 	for _, gv := range g.groupVersions {
 		group := normalization.Group(gv.Group)
 		version := normalization.Version(gv.Version)
+		undotted_group := normalization.BeforeFirstDot(group)
 		typedClientPath := filepath.Join(g.typedClientPath, group, version)
-		imports = append(imports, fmt.Sprintf("%s%s \"%s\"", version, group, typedClientPath))
+		imports = append(imports, fmt.Sprintf("%s%s \"%s\"", version, undotted_group, typedClientPath))
 		fakeTypedClientPath := filepath.Join(typedClientPath, "fake")
-		imports = append(imports, fmt.Sprintf("fake%s%s \"%s\"", version, group, fakeTypedClientPath))
+		imports = append(imports, fmt.Sprintf("fake%s%s \"%s\"", version, undotted_group, fakeTypedClientPath))
 	}
 	// the package that has the clientset Interface
 	imports = append(imports, fmt.Sprintf("clientset \"%s\"", g.clientsetPath))
@@ -73,6 +74,7 @@ func (g *genClientset) Imports(c *generator.Context) (imports []string) {
 		"k8s.io/kubernetes/pkg/apimachinery/registered",
 		"k8s.io/kubernetes/pkg/client/testing/core",
 		"k8s.io/kubernetes/pkg/client/typed/discovery",
+		"fakediscovery \"k8s.io/kubernetes/pkg/client/typed/discovery/fake\"",
 		"k8s.io/kubernetes/pkg/runtime",
 		"k8s.io/kubernetes/pkg/watch",
 	)
@@ -95,7 +97,7 @@ func (g *genClientset) GenerateType(c *generator.Context, t *types.Type, w io.Wr
 	}
 	allGroups := []arg{}
 	for _, gv := range g.groupVersions {
-		group := normalization.Group(gv.Group)
+		group := normalization.BeforeFirstDot(normalization.Group(gv.Group))
 		version := normalization.Version(gv.Version)
 		allGroups = append(allGroups, arg{namer.IC(group), version + group})
 	}
@@ -109,9 +111,12 @@ func (g *genClientset) GenerateType(c *generator.Context, t *types.Type, w io.Wr
 
 // This part of code is version-independent, unchanging.
 var common = `
-// Clientset returns a clientset that will respond with the provided objects
+// NewSimpleClientset returns a clientset that will respond with the provided objects.
+// It's backed by a very simple object tracker that processes creates, updates and deletions as-is,
+// without applying any validations and/or defaults. It shouldn't be considered a replacement
+// for a real clientset and is mostly useful in simple unit tests.
 func NewSimpleClientset(objects ...runtime.Object) *Clientset {
-	o := core.NewObjects(api.Scheme, api.Codecs.UniversalDecoder())
+	o := core.NewObjectTracker(api.Scheme, api.Codecs.UniversalDecoder())
 	for _, obj := range objects {
 		if err := o.Add(obj); err != nil {
 			panic(err)
@@ -134,7 +139,7 @@ type Clientset struct {
 }
 
 func (c *Clientset) Discovery() discovery.DiscoveryInterface {
-	return &FakeDiscovery{&c.Fake}
+	return &fakediscovery.FakeDiscovery{Fake: &c.Fake}
 }
 `
 
@@ -145,6 +150,6 @@ var _ clientset.Interface = &Clientset{}
 var clientsetInterfaceImplTemplate = `
 // $.Group$ retrieves the $.Group$Client
 func (c *Clientset) $.Group$() $.PackageName$.$.Group$Interface {
-	return &fake$.PackageName$.Fake$.Group${&c.Fake}
+	return &fake$.PackageName$.Fake$.Group${Fake: &c.Fake}
 }
 `

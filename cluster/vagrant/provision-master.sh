@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@ set -o pipefail
 # Set the host name explicitly
 # See: https://github.com/mitchellh/vagrant/issues/2430
 hostnamectl set-hostname ${MASTER_NAME}
+# Set the variable to empty value explicitly
+if_to_edit=""
 
 if [[ "$(grep 'VERSION_ID' /etc/os-release)" =~ ^VERSION_ID=23 ]]; then
   # Disable network interface being managed by Network Manager (needed for Fedora 21+)
@@ -33,16 +35,13 @@ if [[ "$(grep 'VERSION_ID' /etc/os-release)" =~ ^VERSION_ID=23 ]]; then
   systemctl restart network
 fi
 
+# needed for vsphere support
+# handle the case when no 'VAGRANT-BEGIN' comment was defined in network-scripts
+# set the NETWORK_IF_NAME to have a default value in such case
 NETWORK_IF_NAME=`echo ${if_to_edit} | awk -F- '{ print $3 }'`
-
-function release_not_found() {
-  echo "It looks as if you don't have a compiled version of Kubernetes.  If you" >&2
-  echo "are running from a clone of the git repo, please run 'make quick-release'." >&2
-  echo "Note that this requires having Docker installed.  If you are running " >&2
-  echo "from a release tarball, something is wrong.  Look at " >&2
-  echo "http://kubernetes.io/ for information on how to contact the development team for help." >&2
-  exit 1
-}
+if [[ -z "$NETWORK_IF_NAME" ]]; then
+  NETWORK_IF_NAME=${DEFAULT_NETWORK_IF_NAME}
+fi
 
 # Setup hosts file to support ping by hostname to each node in the cluster from apiserver
 for (( i=0; i<${#NODE_NAMES[@]}; i++)); do
@@ -56,6 +55,7 @@ done
 echo "127.0.0.1 localhost" >> /etc/hosts # enables cmds like 'kubectl get pods' on master.
 echo "$MASTER_IP $MASTER_NAME" >> /etc/hosts
 
+enable-accounting
 prepare-package-manager
 
 # Configure the master network
@@ -110,7 +110,7 @@ if ! which /usr/libexec/cockpit-ws &>/dev/null; then
 
   pushd /etc/yum.repos.d
     curl -OL https://copr.fedorainfracloud.org/coprs/g/cockpit/cockpit-preview/repo/fedora-23/msuchy-cockpit-preview-fedora-23.repo
-    dnf install -y cockpit cockpit-kubernetes
+    dnf install -y cockpit cockpit-kubernetes docker socat ethtool
   popd
 
   systemctl enable cockpit.socket

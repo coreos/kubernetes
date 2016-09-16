@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,10 +20,10 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/renstrom/dedent"
 	"k8s.io/kubernetes/pkg/kubectl"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/resource"
-	"k8s.io/kubernetes/pkg/util/errors"
 
 	"github.com/spf13/cobra"
 )
@@ -32,33 +32,42 @@ import (
 // referencing the cmd.Flags()
 type HistoryOptions struct {
 	Filenames []string
+	Recursive bool
 }
 
-const (
-	history_long    = `View previous rollout revisions and configurations.`
-	history_example = `# View the rollout history of a deployment
-kubectl rollout history deployment/abc
+var (
+	history_long = dedent.Dedent(`
+		View previous rollout revisions and configurations.`)
+	history_example = dedent.Dedent(`
+		# View the rollout history of a deployment
+		kubectl rollout history deployment/abc
 
-# View the details of deployment revision 3
-kubectl rollout history deployment/abc --revision=3`
+		# View the details of deployment revision 3
+		kubectl rollout history deployment/abc --revision=3`)
 )
 
 func NewCmdRolloutHistory(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 	options := &HistoryOptions{}
 
+	validArgs := []string{"deployment"}
+	argAliases := kubectl.ResourceAliases(validArgs)
+
 	cmd := &cobra.Command{
 		Use:     "history (TYPE NAME | TYPE/NAME) [flags]",
-		Short:   "view rollout history",
+		Short:   "View rollout history",
 		Long:    history_long,
 		Example: history_example,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(RunHistory(f, cmd, out, args, options))
 		},
+		ValidArgs:  validArgs,
+		ArgAliases: argAliases,
 	}
 
 	cmd.Flags().Int64("revision", 0, "See the details, including podTemplate of the revision specified")
 	usage := "Filename, directory, or URL to a file identifying the resource to get from a server."
 	kubectl.AddJsonFilenameFlag(cmd, &options.Filenames, usage)
+	cmdutil.AddRecursiveFlag(cmd, &options.Recursive)
 	return cmd
 }
 
@@ -66,60 +75,48 @@ func RunHistory(f *cmdutil.Factory, cmd *cobra.Command, out io.Writer, args []st
 	if len(args) == 0 && len(options.Filenames) == 0 {
 		return cmdutil.UsageError(cmd, "Required resource not specified.")
 	}
-	revisionDetail := cmdutil.GetFlagInt64(cmd, "revision")
+	revision := cmdutil.GetFlagInt64(cmd, "revision")
 
-	mapper, typer := f.Object()
+	mapper, typer := f.Object(false)
 
 	cmdNamespace, enforceNamespace, err := f.DefaultNamespace()
 	if err != nil {
 		return err
 	}
 
-	infos, err := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
+	r := resource.NewBuilder(mapper, typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
 		NamespaceParam(cmdNamespace).DefaultNamespace().
-		FilenameParam(enforceNamespace, options.Filenames...).
+		FilenameParam(enforceNamespace, options.Recursive, options.Filenames...).
 		ResourceTypeOrNameArgs(true, args...).
+		ContinueOnError().
 		Latest().
 		Flatten().
-		Do().
-		Infos()
+		Do()
+	err = r.Err()
 	if err != nil {
 		return err
 	}
 
-	errs := []error{}
-	for _, info := range infos {
+	return r.Visit(func(info *resource.Info, err error) error {
+		if err != nil {
+			return err
+		}
 		mapping := info.ResourceMapping()
 		historyViewer, err := f.HistoryViewer(mapping)
 		if err != nil {
-			errs = append(errs, err)
-			continue
+			return err
 		}
-		historyInfo, err := historyViewer.History(info.Namespace, info.Name)
+		historyInfo, err := historyViewer.ViewHistory(info.Namespace, info.Name, revision)
 		if err != nil {
-			errs = append(errs, err)
-			continue
+			return err
 		}
 
-		formattedOutput := ""
-		if revisionDetail > 0 {
-			// Print details of a specific revision
-			template, ok := historyInfo.RevisionToTemplate[revisionDetail]
-			if !ok {
-				return fmt.Errorf("unable to find revision %d of %s %q", revisionDetail, mapping.Resource, info.Name)
-			}
-			fmt.Fprintf(out, "%s %q revision %d\n", mapping.Resource, info.Name, revisionDetail)
-			formattedOutput, err = kubectl.DescribePodTemplate(template)
-		} else {
-			// Print all revisions
-			formattedOutput, err = kubectl.PrintRolloutHistory(historyInfo, mapping.Resource, info.Name)
+		header := fmt.Sprintf("%s %q", mapping.Resource, info.Name)
+		if revision > 0 {
+			header = fmt.Sprintf("%s with revision #%d", header, revision)
 		}
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		fmt.Fprintf(out, "%s\n", formattedOutput)
-	}
-
-	return errors.NewAggregate(errs)
+		fmt.Fprintf(out, "%s\n", header)
+		fmt.Fprintf(out, "%s\n", historyInfo)
+		return nil
+	})
 }

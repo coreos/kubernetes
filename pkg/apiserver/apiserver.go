@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"path"
 	rt "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,27 +37,22 @@ import (
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apiserver/metrics"
-	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/runtime"
 	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/flushwriter"
 	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
 	"k8s.io/kubernetes/pkg/util/wsstream"
-	"k8s.io/kubernetes/pkg/version"
 
 	"github.com/emicklei/go-restful"
 	"github.com/golang/glog"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func init() {
 	metrics.Register()
 }
 
-// mux is an object that can register http handlers.
-type Mux interface {
-	Handle(pattern string, handler http.Handler)
-	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+type APIResourceLister interface {
+	ListAPIResources() []unversioned.APIResource
 }
 
 // APIGroupVersion is a helper for exposing rest.Storage objects as http.Handlers via go-restful
@@ -84,12 +80,15 @@ type APIGroupVersion struct {
 
 	Mapper meta.RESTMapper
 
+	// Serializer is used to determine how to convert responses from API methods into bytes to send over
+	// the wire.
 	Serializer     runtime.NegotiatedSerializer
 	ParameterCodec runtime.ParameterCodec
 
 	Typer     runtime.ObjectTyper
 	Creater   runtime.ObjectCreater
 	Convertor runtime.ObjectConvertor
+	Copier    runtime.ObjectCopier
 	Linker    runtime.SelfLinker
 
 	Admit   admission.Interface
@@ -102,6 +101,10 @@ type APIGroupVersion struct {
 	// the subresource. The key of this map should be the path of the subresource. The keys here should
 	// match the keys in the Storage map above for subresources.
 	SubresourceGroupVersionKind map[string]unversioned.GroupVersionKind
+
+	// ResourceLister is an interface that knows how to list resources
+	// for this API Group.
+	ResourceLister APIResourceLister
 }
 
 type ProxyDialerFunc func(network, addr string) (net.Conn, error)
@@ -114,6 +117,17 @@ const (
 	MaxTimeoutSecs = 600
 )
 
+// staticLister implements the APIResourceLister interface
+type staticLister struct {
+	list []unversioned.APIResource
+}
+
+func (s staticLister) ListAPIResources() []unversioned.APIResource {
+	return s.list
+}
+
+var _ APIResourceLister = &staticLister{}
+
 // InstallREST registers the REST handlers (storage, watch, proxy and redirect) into a restful Container.
 // It is expected that the provided path root prefix will serve all operations. Root MUST NOT end
 // in a slash.
@@ -121,7 +135,11 @@ func (g *APIGroupVersion) InstallREST(container *restful.Container) error {
 	installer := g.newInstaller()
 	ws := installer.NewWebService()
 	apiResources, registrationErrors := installer.Install(ws)
-	AddSupportedResourcesWebService(g.Serializer, ws, g.GroupVersion, apiResources)
+	lister := g.ResourceLister
+	if lister == nil {
+		lister = staticLister{apiResources}
+	}
+	AddSupportedResourcesWebService(g.Serializer, ws, g.GroupVersion, lister)
 	container.Add(ws)
 	return utilerrors.NewAggregate(registrationErrors)
 }
@@ -145,7 +163,11 @@ func (g *APIGroupVersion) UpdateREST(container *restful.Container) error {
 		return apierrors.NewInternalError(fmt.Errorf("unable to find an existing webservice for prefix %s", installer.prefix))
 	}
 	apiResources, registrationErrors := installer.Install(ws)
-	AddSupportedResourcesWebService(g.Serializer, ws, g.GroupVersion, apiResources)
+	lister := g.ResourceLister
+	if lister == nil {
+		lister = staticLister{apiResources}
+	}
+	AddSupportedResourcesWebService(g.Serializer, ws, g.GroupVersion, lister)
 	return utilerrors.NewAggregate(registrationErrors)
 }
 
@@ -159,31 +181,6 @@ func (g *APIGroupVersion) newInstaller() *APIInstaller {
 		minRequestTimeout: g.MinRequestTimeout,
 	}
 	return installer
-}
-
-// TODO: document all handlers
-// InstallSupport registers the APIServer support functions
-func InstallSupport(mux Mux, ws *restful.WebService, checks ...healthz.HealthzChecker) {
-	// TODO: convert healthz and metrics to restful and remove container arg
-	healthz.InstallHandler(mux, checks...)
-	mux.Handle("/metrics", prometheus.Handler())
-
-	// Set up a service to return the git code version.
-	ws.Path("/version")
-	ws.Doc("git code version from which this is built")
-	ws.Route(
-		ws.GET("/").To(handleVersion).
-			Doc("get the code version").
-			Operation("getCodeVersion").
-			Produces(restful.MIME_JSON).
-			Consumes(restful.MIME_JSON))
-}
-
-// InstallLogsSupport registers the APIServer log support function into a mux.
-func InstallLogsSupport(mux Mux) {
-	// TODO: use restful: ws.Route(ws.GET("/logs/{logpath:*}").To(fileHandler))
-	// See github.com/emicklei/go-restful/blob/master/examples/restful-serve-static.go
-	mux.Handle("/logs/", http.StripPrefix("/logs/", http.FileServer(http.Dir("/var/log/"))))
 }
 
 // TODO: needs to perform response type negotiation, this is probably the wrong way to recover panics
@@ -220,7 +217,13 @@ func InstallServiceErrorHandler(s runtime.NegotiatedSerializer, container *restf
 }
 
 func serviceErrorHandler(s runtime.NegotiatedSerializer, requestResolver *RequestInfoResolver, apiVersions []string, serviceErr restful.ServiceError, request *restful.Request, response *restful.Response) {
-	errorNegotiated(apierrors.NewGenericServerResponse(serviceErr.Code, "", api.Resource(""), "", "", 0, false), s, unversioned.GroupVersion{}, response.ResponseWriter, request.Request)
+	errorNegotiated(
+		apierrors.NewGenericServerResponse(serviceErr.Code, "", api.Resource(""), "", serviceErr.Message, 0, false),
+		s,
+		unversioned.GroupVersion{},
+		response.ResponseWriter,
+		request.Request,
+	)
 }
 
 // Adds a service to return the supported api versions at the legacy /api.
@@ -252,9 +255,9 @@ type stripVersionEncoder struct {
 	serializer runtime.Serializer
 }
 
-func (c stripVersionEncoder) EncodeToStream(obj runtime.Object, w io.Writer, overrides ...unversioned.GroupVersion) error {
+func (c stripVersionEncoder) Encode(obj runtime.Object, w io.Writer) error {
 	buf := bytes.NewBuffer([]byte{})
-	err := c.encoder.EncodeToStream(obj, buf, overrides...)
+	err := c.encoder.Encode(obj, buf)
 	if err != nil {
 		return err
 	}
@@ -264,8 +267,8 @@ func (c stripVersionEncoder) EncodeToStream(obj runtime.Object, w io.Writer, ove
 	}
 	gvk.Group = ""
 	gvk.Version = ""
-	roundTrippedObj.GetObjectKind().SetGroupVersionKind(gvk)
-	return c.serializer.EncodeToStream(roundTrippedObj, w)
+	roundTrippedObj.GetObjectKind().SetGroupVersionKind(*gvk)
+	return c.serializer.Encode(roundTrippedObj, w)
 }
 
 // StripVersionNegotiatedSerializer will return stripVersionEncoder when
@@ -274,9 +277,16 @@ type StripVersionNegotiatedSerializer struct {
 	runtime.NegotiatedSerializer
 }
 
-func (n StripVersionNegotiatedSerializer) EncoderForVersion(serializer runtime.Serializer, gv unversioned.GroupVersion) runtime.Encoder {
-	encoder := n.NegotiatedSerializer.EncoderForVersion(serializer, gv)
-	return stripVersionEncoder{encoder, serializer}
+func (n StripVersionNegotiatedSerializer) EncoderForVersion(encoder runtime.Encoder, gv runtime.GroupVersioner) runtime.Encoder {
+	serializer, ok := encoder.(runtime.Serializer)
+	if !ok {
+		// The stripVersionEncoder needs both an encoder and decoder, but is called from a context that doesn't have access to the
+		// decoder. We do a best effort cast here (since this code path is only for backwards compatibility) to get access to the caller's
+		// decoder.
+		panic(fmt.Sprintf("Unable to extract serializer from %#v", encoder))
+	}
+	versioned := n.NegotiatedSerializer.EncoderForVersion(encoder, gv)
+	return stripVersionEncoder{versioned, serializer}
 }
 
 func keepUnversioned(group string) bool {
@@ -327,7 +337,7 @@ func AddGroupWebService(s runtime.NegotiatedSerializer, container *restful.Conta
 
 // Adds a service to return the supported resources, E.g., a such web service
 // will be registered at /apis/extensions/v1.
-func AddSupportedResourcesWebService(s runtime.NegotiatedSerializer, ws *restful.WebService, groupVersion unversioned.GroupVersion, apiResources []unversioned.APIResource) {
+func AddSupportedResourcesWebService(s runtime.NegotiatedSerializer, ws *restful.WebService, groupVersion unversioned.GroupVersion, lister APIResourceLister) {
 	ss := s
 	if keepUnversioned(groupVersion.Group) {
 		// Because in release 1.1, /apis/extensions/v1beta1 returns response
@@ -335,18 +345,13 @@ func AddSupportedResourcesWebService(s runtime.NegotiatedSerializer, ws *restful
 		// keep the response backwards compatible.
 		ss = StripVersionNegotiatedSerializer{s}
 	}
-	resourceHandler := SupportedResourcesHandler(ss, groupVersion, apiResources)
+	resourceHandler := SupportedResourcesHandler(ss, groupVersion, lister)
 	ws.Route(ws.GET("/").To(resourceHandler).
 		Doc("get available resources").
 		Operation("getAPIResources").
 		Produces(s.SupportedMediaTypes()...).
 		Consumes(s.SupportedMediaTypes()...).
 		Writes(unversioned.APIResourceList{}))
-}
-
-// handleVersion writes the server's version information.
-func handleVersion(req *restful.Request, resp *restful.Response) {
-	writeRawJSON(http.StatusOK, version.Get(), resp.ResponseWriter)
 }
 
 // APIVersionHandler returns a handler which will list the provided versions as available.
@@ -372,9 +377,9 @@ func GroupHandler(s runtime.NegotiatedSerializer, group unversioned.APIGroup) re
 }
 
 // SupportedResourcesHandler returns a handler which will list the provided resources as available.
-func SupportedResourcesHandler(s runtime.NegotiatedSerializer, groupVersion unversioned.GroupVersion, apiResources []unversioned.APIResource) restful.RouteFunction {
+func SupportedResourcesHandler(s runtime.NegotiatedSerializer, groupVersion unversioned.GroupVersion, lister APIResourceLister) restful.RouteFunction {
 	return func(req *restful.Request, resp *restful.Response) {
-		writeNegotiated(s, unversioned.GroupVersion{}, resp.ResponseWriter, req.Request, http.StatusOK, &unversioned.APIResourceList{GroupVersion: groupVersion.String(), APIResources: apiResources})
+		writeNegotiated(s, unversioned.GroupVersion{}, resp.ResponseWriter, req.Request, http.StatusOK, &unversioned.APIResourceList{GroupVersion: groupVersion.String(), APIResources: lister.ListAPIResources()})
 	}
 }
 
@@ -398,7 +403,7 @@ func write(statusCode int, gv unversioned.GroupVersion, s runtime.NegotiatedSeri
 		defer out.Close()
 
 		if wsstream.IsWebSocketRequest(req) {
-			r := wsstream.NewReader(out, true)
+			r := wsstream.NewReader(out, true, wsstream.NewDefaultReaderProtocols())
 			if err := r.Copy(w, req); err != nil {
 				utilruntime.HandleError(fmt.Errorf("error encountered while streaming results via websocket: %v", err))
 			}
@@ -422,18 +427,18 @@ func write(statusCode int, gv unversioned.GroupVersion, s runtime.NegotiatedSeri
 
 // writeNegotiated renders an object in the content type negotiated by the client
 func writeNegotiated(s runtime.NegotiatedSerializer, gv unversioned.GroupVersion, w http.ResponseWriter, req *http.Request, statusCode int, object runtime.Object) {
-	serializer, contentType, err := negotiateOutputSerializer(req, s)
+	serializer, err := negotiateOutputSerializer(req, s)
 	if err != nil {
 		status := errToAPIStatus(err)
-		writeRawJSON(int(status.Code), status, w)
+		WriteRawJSON(int(status.Code), status, w)
 		return
 	}
 
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", serializer.MediaType)
 	w.WriteHeader(statusCode)
 
 	encoder := s.EncoderForVersion(serializer, gv)
-	if err := encoder.EncodeToStream(object, w); err != nil {
+	if err := encoder.Encode(object, w); err != nil {
 		errorJSONFatal(err, encoder, w)
 	}
 }
@@ -442,6 +447,11 @@ func writeNegotiated(s runtime.NegotiatedSerializer, gv unversioned.GroupVersion
 func errorNegotiated(err error, s runtime.NegotiatedSerializer, gv unversioned.GroupVersion, w http.ResponseWriter, req *http.Request) int {
 	status := errToAPIStatus(err)
 	code := int(status.Code)
+	// when writing an error, check to see if the status indicates a retry after period
+	if status.Details != nil && status.Details.RetryAfterSeconds > 0 {
+		delay := strconv.Itoa(int(status.Details.RetryAfterSeconds))
+		w.Header().Set("Retry-After", delay)
+	}
 	writeNegotiated(s, gv, w, req, code, status)
 	return code
 }
@@ -464,8 +474,8 @@ func errorJSONFatal(err error, codec runtime.Encoder, w http.ResponseWriter) int
 	return code
 }
 
-// writeRawJSON writes a non-API object in JSON.
-func writeRawJSON(statusCode int, object interface{}, w http.ResponseWriter) {
+// WriteRawJSON writes a non-API object in JSON.
+func WriteRawJSON(statusCode int, object interface{}, w http.ResponseWriter) {
 	output, err := json.MarshalIndent(object, "", "  ")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

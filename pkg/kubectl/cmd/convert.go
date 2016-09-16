@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,9 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"os"
+
+	"github.com/renstrom/dedent"
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -31,27 +34,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	convert_long = `Convert config files between different API versions. Both YAML
-and JSON formats are accepted.
+var (
+	convert_long = dedent.Dedent(`
+		Convert config files between different API versions. Both YAML
+		and JSON formats are accepted.
 
-The command takes filename, directory, or URL as input, and convert it into format
-of version specified by --output-version flag. If target version is not specified or
-not supported, convert to latest version.
+		The command takes filename, directory, or URL as input, and convert it into format
+		of version specified by --output-version flag. If target version is not specified or
+		not supported, convert to latest version.
 
-The default output will be printed to stdout in YAML format. One can use -o option
-to change to output destination.
-`
-	convert_example = `# Convert 'pod.yaml' to latest version and print to stdout.
-kubectl convert -f pod.yaml
+		The default output will be printed to stdout in YAML format. One can use -o option
+		to change to output destination.
+		`)
 
-# Convert the live state of the resource specified by 'pod.yaml' to the latest version
-# and print to stdout in json format.
-kubectl convert -f pod.yaml --local -o json
+	convert_example = dedent.Dedent(`
+		# Convert 'pod.yaml' to latest version and print to stdout.
+		kubectl convert -f pod.yaml
 
-# Convert all files under current directory to latest version and create them all.
-kubectl convert -f . | kubectl create -f -
-`
+		# Convert the live state of the resource specified by 'pod.yaml' to the latest version
+		# and print to stdout in json format.
+		kubectl convert -f pod.yaml --local -o json
+
+		# Convert all files under current directory to latest version and create them all.
+		kubectl convert -f . | kubectl create -f -
+		`)
 )
 
 // NewCmdConvert creates a command object for the generic "convert" action, which
@@ -74,11 +80,12 @@ func NewCmdConvert(f *cmdutil.Factory, out io.Writer) *cobra.Command {
 
 	usage := "Filename, directory, or URL to file to need to get converted."
 	kubectl.AddJsonFilenameFlag(cmd, &options.filenames, usage)
+	cmdutil.AddRecursiveFlag(cmd, &options.recursive)
 	cmd.MarkFlagRequired("filename")
 	cmdutil.AddValidateFlags(cmd)
 	cmdutil.AddPrinterFlags(cmd)
 	cmd.Flags().BoolVar(&options.local, "local", true, "If true, convert will NOT try to contact api-server but run locally.")
-
+	cmdutil.AddInclude3rdPartyFlags(cmd)
 	return cmd
 }
 
@@ -93,6 +100,8 @@ type ConvertOptions struct {
 	printer kubectl.ResourcePrinter
 
 	outputVersion unversioned.GroupVersion
+
+	recursive bool
 }
 
 // Complete collects information required to run Convert command from command line.
@@ -106,11 +115,12 @@ func (o *ConvertOptions) Complete(f *cmdutil.Factory, out io.Writer, cmd *cobra.
 	}
 
 	// build the builder
-	mapper, typer := f.Object()
+	mapper, typer := f.Object(cmdutil.GetIncludeThirdPartyAPIs(cmd))
 	clientMapper := resource.ClientMapperFunc(f.ClientForMapping)
+
 	if o.local {
-		fmt.Fprintln(out, "running in local mode...")
-		o.builder = resource.NewBuilder(mapper, typer, resource.DisabledClientForMapping{clientMapper}, f.Decoder(true))
+		fmt.Fprintln(os.Stderr, "running in local mode...")
+		o.builder = resource.NewBuilder(mapper, typer, resource.DisabledClientForMapping{ClientMapper: clientMapper}, f.Decoder(true))
 	} else {
 		o.builder = resource.NewBuilder(mapper, typer, clientMapper, f.Decoder(true))
 		schema, err := f.Validator(cmdutil.GetFlagBool(cmd, "validate"), cmdutil.GetFlagString(cmd, "schema-cache-dir"))
@@ -125,7 +135,7 @@ func (o *ConvertOptions) Complete(f *cmdutil.Factory, out io.Writer, cmd *cobra.
 	}
 	o.builder = o.builder.NamespaceParam(cmdNamespace).
 		ContinueOnError().
-		FilenameParam(false, o.filenames...).
+		FilenameParam(false, o.recursive, o.filenames...).
 		Flatten()
 
 	// build the printer
@@ -140,7 +150,7 @@ func (o *ConvertOptions) Complete(f *cmdutil.Factory, out io.Writer, cmd *cobra.
 		}
 	}
 	o.encoder = f.JSONEncoder()
-	o.printer, _, err = kubectl.GetPrinter(outputFormat, templateFile)
+	o.printer, _, err = kubectl.GetPrinter(outputFormat, templateFile, false)
 	if err != nil {
 		return err
 	}
@@ -150,15 +160,32 @@ func (o *ConvertOptions) Complete(f *cmdutil.Factory, out io.Writer, cmd *cobra.
 
 // RunConvert implements the generic Convert command
 func (o *ConvertOptions) RunConvert() error {
-	infos, err := o.builder.Do().Infos()
+	r := o.builder.Do()
+	err := r.Err()
 	if err != nil {
 		return err
 	}
 
-	objects, err := resource.AsVersionedObject(infos, false, o.outputVersion.String(), o.encoder)
+	count := 0
+	err = r.Visit(func(info *resource.Info, err error) error {
+		if err != nil {
+			return err
+		}
+
+		infos := []*resource.Info{info}
+		objects, err := resource.AsVersionedObject(infos, false, o.outputVersion, o.encoder)
+		if err != nil {
+			return err
+		}
+
+		count++
+		return o.printer.PrintObj(objects, o.out)
+	})
 	if err != nil {
 		return err
 	}
-
-	return o.printer.PrintObj(objects, o.out)
+	if count == 0 {
+		return fmt.Errorf("no objects passed to convert")
+	}
+	return nil
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -91,6 +91,21 @@ func TestSecretGenerate(t *testing.T) {
 				"from-file": []string{"key1==value"},
 			},
 			expectErr: true,
+		},
+		{
+			params: map[string]interface{}{
+				"name":         "foo",
+				"from-literal": []string{"key1==value1"},
+			},
+			expected: &api.Secret{
+				ObjectMeta: api.ObjectMeta{
+					Name: "foo",
+				},
+				Data: map[string][]byte{
+					"key1": []byte("=value1"),
+				},
+			},
+			expectErr: false,
 		},
 	}
 	generator := SecretGeneratorV1{}

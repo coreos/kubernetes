@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,11 +32,13 @@ import (
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	"k8s.io/kubernetes/pkg/api/unversioned"
-	apiutil "k8s.io/kubernetes/pkg/api/util"
 
 	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/apiserver"
+	"k8s.io/kubernetes/pkg/auth/authorizer"
+	"k8s.io/kubernetes/pkg/auth/user"
+	ipallocator "k8s.io/kubernetes/pkg/registry/service/ipallocator"
 	etcdtesting "k8s.io/kubernetes/pkg/storage/etcd/testing"
 	utilnet "k8s.io/kubernetes/pkg/util/net"
 
@@ -45,12 +47,12 @@ import (
 
 // setUp is a convience function for setting up for (most) tests.
 func setUp(t *testing.T) (GenericAPIServer, *etcdtesting.EtcdTestServer, Config, *assert.Assertions) {
-	etcdServer := etcdtesting.NewEtcdTestClientServer(t)
+	etcdServer, _ := etcdtesting.NewUnsecuredEtcd3TestClientServer(t)
 
 	genericapiserver := GenericAPIServer{}
 	config := Config{}
 	config.PublicAddress = net.ParseIP("192.168.10.4")
-
+	config.RequestContextMapper = api.NewRequestContextMapper()
 	return genericapiserver, etcdServer, config, assert.New(t)
 }
 
@@ -63,7 +65,7 @@ func newMaster(t *testing.T) (*GenericAPIServer, *etcdtesting.EtcdTestServer, Co
 	config.APIPrefix = "/api"
 	config.APIGroupPrefix = "/apis"
 
-	s, err := New(&config)
+	s, err := config.New()
 	if err != nil {
 		t.Fatalf("Error in bringing up the server: %v", err)
 	}
@@ -77,23 +79,19 @@ func TestNew(t *testing.T) {
 	defer etcdserver.Terminate(t)
 
 	// Verify many of the variables match their config counterparts
-	assert.Equal(s.enableLogsSupport, config.EnableLogsSupport)
-	assert.Equal(s.enableUISupport, config.EnableUISupport)
 	assert.Equal(s.enableSwaggerSupport, config.EnableSwaggerSupport)
-	assert.Equal(s.enableProfiling, config.EnableProfiling)
-	assert.Equal(s.APIPrefix, config.APIPrefix)
-	assert.Equal(s.APIGroupPrefix, config.APIGroupPrefix)
-	assert.Equal(s.corsAllowedOriginList, config.CorsAllowedOriginList)
-	assert.Equal(s.authenticator, config.Authenticator)
-	assert.Equal(s.authorizer, config.Authorizer)
-	assert.Equal(s.AdmissionControl, config.AdmissionControl)
-	assert.Equal(s.ApiGroupVersionOverrides, config.APIGroupVersionOverrides)
-	assert.Equal(s.RequestContextMapper, config.RequestContextMapper)
-	assert.Equal(s.cacheTimeout, config.CacheTimeout)
-	assert.Equal(s.ExternalAddress, config.ExternalHost)
+	assert.Equal(s.legacyAPIPrefix, config.APIPrefix)
+	assert.Equal(s.apiPrefix, config.APIGroupPrefix)
+	assert.Equal(s.admissionControl, config.AdmissionControl)
+	assert.Equal(s.RequestContextMapper(), config.RequestContextMapper)
 	assert.Equal(s.ClusterIP, config.PublicAddress)
-	assert.Equal(s.PublicReadWritePort, config.ReadWritePort)
-	assert.Equal(s.ServiceReadWriteIP, config.ServiceReadWriteIP)
+
+	// these values get defaulted
+	_, serviceClusterIPRange, _ := net.ParseCIDR("10.0.0.0/24")
+	serviceReadWriteIP, _ := ipallocator.GetIndexedIP(serviceClusterIPRange, 1)
+	assert.Equal(s.ServiceReadWriteIP, serviceReadWriteIP)
+	assert.Equal(s.ExternalAddress, net.JoinHostPort(config.PublicAddress.String(), "6443"))
+	assert.Equal(s.PublicReadWritePort, 6443)
 
 	// These functions should point to the same memory location
 	serverDialer, _ := utilnet.Dialer(s.ProxyTransport)
@@ -115,7 +113,7 @@ func TestInstallAPIGroups(t *testing.T) {
 	config.APIGroupPrefix = "/apiGroupPrefix"
 	config.Serializer = api.Codecs
 
-	s, err := New(&config)
+	s, err := config.New()
 	if err != nil {
 		t.Fatalf("Error in bringing up the server: %v", err)
 	}
@@ -142,8 +140,8 @@ func TestInstallAPIGroups(t *testing.T) {
 	}
 	s.InstallAPIGroups(apiGroupsInfo)
 
-	// TODO: Close() this server when fix #19254
 	server := httptest.NewServer(s.HandlerContainer.ServeMux)
+	defer server.Close()
 	validPaths := []string{
 		// "/api"
 		config.APIPrefix,
@@ -177,12 +175,11 @@ func TestHandleWithAuth(t *testing.T) {
 	server, etcdserver, _, assert := setUp(t)
 	defer etcdserver.Terminate(t)
 
-	mh := apiserver.MuxHelper{Mux: http.NewServeMux()}
-	server.MuxHelper = &mh
+	server.Mux = apiserver.NewPathRecorderMux(http.NewServeMux())
 	handler := func(r http.ResponseWriter, w *http.Request) { w.Write(nil) }
 	server.HandleWithAuth("/test", http.HandlerFunc(handler))
 
-	assert.Contains(server.MuxHelper.RegisteredPaths, "/test", "Path not found in MuxHelper")
+	assert.Contains(server.Mux.HandledPaths(), "/test", "Path not found in MuxHelper")
 }
 
 // TestHandleFuncWithAuth verifies HandleFuncWithAuth adds the path
@@ -191,12 +188,78 @@ func TestHandleFuncWithAuth(t *testing.T) {
 	server, etcdserver, _, assert := setUp(t)
 	defer etcdserver.Terminate(t)
 
-	mh := apiserver.MuxHelper{Mux: http.NewServeMux()}
-	server.MuxHelper = &mh
+	server.Mux = apiserver.NewPathRecorderMux(http.NewServeMux())
 	handler := func(r http.ResponseWriter, w *http.Request) { w.Write(nil) }
 	server.HandleFuncWithAuth("/test", handler)
 
-	assert.Contains(server.MuxHelper.RegisteredPaths, "/test", "Path not found in MuxHelper")
+	assert.Contains(server.Mux.HandledPaths(), "/test", "Path not found in MuxHelper")
+}
+
+// TestNotRestRoutesHaveAuth checks that special non-routes are behind authz/authn.
+func TestNotRestRoutesHaveAuth(t *testing.T) {
+	_, etcdserver, config, _ := setUp(t)
+	defer etcdserver.Terminate(t)
+
+	authz := mockAuthorizer{}
+
+	config.ProxyDialer = func(network, addr string) (net.Conn, error) { return nil, nil }
+	config.ProxyTLSClientConfig = &tls.Config{}
+	config.APIPrefix = "/apiPrefix"
+	config.APIGroupPrefix = "/apiGroupPrefix"
+	config.Serializer = api.Codecs
+	config.Authorizer = &authz
+
+	config.EnableSwaggerUI = true
+	config.EnableIndex = true
+	config.EnableProfiling = true
+	config.EnableSwaggerSupport = true
+	config.EnableVersion = true
+
+	s, err := config.New()
+	if err != nil {
+		t.Fatalf("Error in bringing up the server: %v", err)
+	}
+
+	for _, test := range []struct {
+		route string
+	}{
+		{"/"},
+		{"/swagger-ui/"},
+		{"/debug/pprof/"},
+		{"/version"},
+	} {
+		resp := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", test.route, nil)
+		s.Handler.ServeHTTP(resp, req)
+		if resp.Code != 200 {
+			t.Errorf("route %q expected to work: code %d", test.route, resp.Code)
+			continue
+		}
+
+		if authz.lastURI != test.route {
+			t.Errorf("route %q expected to go through authorization, last route did: %q", test.route, authz.lastURI)
+		}
+	}
+}
+
+type mockAuthorizer struct {
+	lastURI string
+}
+
+func (authz *mockAuthorizer) Authorize(a authorizer.Attributes) (authorized bool, reason string, err error) {
+	authz.lastURI = a.GetPath()
+	return true, "", nil
+}
+
+type mockAuthenticator struct {
+	lastURI string
+}
+
+func (authn *mockAuthenticator) AuthenticateRequest(req *http.Request) (user.Info, bool, error) {
+	authn.lastURI = req.RequestURI
+	return &user.DefaultInfo{
+		Name: "foo",
+	}, true, nil
 }
 
 // TestInstallSwaggerAPI verifies that the swagger api is added
@@ -264,7 +327,7 @@ func getGroupList(server *httptest.Server) (*unversioned.APIGroupList, error) {
 }
 
 func TestDiscoveryAtAPIS(t *testing.T) {
-	master, etcdserver, config, assert := newMaster(t)
+	master, etcdserver, _, assert := newMaster(t)
 	defer etcdserver.Terminate(t)
 
 	server := httptest.NewServer(master.HandlerContainer.ServeMux)
@@ -275,7 +338,6 @@ func TestDiscoveryAtAPIS(t *testing.T) {
 	assert.Equal(0, len(groupList.Groups))
 
 	// Add a Group.
-	extensionsGroupName := extensions.GroupName
 	extensionsVersions := []unversioned.GroupVersionForDiscovery{
 		{
 			GroupVersion: testapi.Extensions.GroupVersion().String(),
@@ -283,11 +345,11 @@ func TestDiscoveryAtAPIS(t *testing.T) {
 		},
 	}
 	extensionsPreferredVersion := unversioned.GroupVersionForDiscovery{
-		GroupVersion: config.StorageVersions[extensions.GroupName],
-		Version:      apiutil.GetVersion(config.StorageVersions[extensions.GroupName]),
+		GroupVersion: extensions.GroupName + "/preferred",
+		Version:      "preferred",
 	}
 	master.AddAPIGroupForDiscovery(unversioned.APIGroup{
-		Name:             extensionsGroupName,
+		Name:             extensions.GroupName,
 		Versions:         extensionsVersions,
 		PreferredVersion: extensionsPreferredVersion,
 	})
@@ -299,13 +361,13 @@ func TestDiscoveryAtAPIS(t *testing.T) {
 
 	assert.Equal(1, len(groupList.Groups))
 	groupListGroup := groupList.Groups[0]
-	assert.Equal(extensionsGroupName, groupListGroup.Name)
+	assert.Equal(extensions.GroupName, groupListGroup.Name)
 	assert.Equal(extensionsVersions, groupListGroup.Versions)
 	assert.Equal(extensionsPreferredVersion, groupListGroup.PreferredVersion)
 	assert.Equal(master.getServerAddressByClientCIDRs(&http.Request{}), groupListGroup.ServerAddressByClientCIDRs)
 
 	// Remove the group.
-	master.RemoveAPIGroupForDiscovery(extensionsGroupName)
+	master.RemoveAPIGroupForDiscovery(extensions.GroupName)
 	groupList, err = getGroupList(server)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

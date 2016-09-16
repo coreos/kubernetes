@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,8 +39,8 @@ func Test_nodeWithUpdatedStatus(t *testing.T) {
 					Status:             s,
 					Reason:             r,
 					Message:            "some message we don't care about here",
-					LastTransitionTime: unversioned.Time{now.Add(-time.Minute)},
-					LastHeartbeatTime:  unversioned.Time{now.Add(d)},
+					LastTransitionTime: unversioned.Time{Time: now.Add(-time.Minute)},
+					LastHeartbeatTime:  unversioned.Time{Time: now.Add(d)},
 				}},
 			},
 		}

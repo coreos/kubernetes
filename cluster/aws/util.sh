@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -65,10 +65,8 @@ case "${OS_DISTRIBUTION}" in
   wily)
     ;;
   vivid)
-    echo "vivid is currently end-of-life and does not get updates." >&2
-    echo "Please consider using wily or jessie instead" >&2
-    echo "(will continue in 10 seconds)" >&2
-    sleep 10
+    echo "vivid is no longer supported by kube-up; please use jessie instead" >&2
+    exit 2
     ;;
   coreos)
     echo "coreos is no longer supported by kube-up; please use jessie instead" >&2
@@ -95,14 +93,19 @@ source "${KUBE_ROOT}/cluster/aws/${OS_DISTRIBUTION}/util.sh"
 load_distro_utils
 
 # This removes the final character in bash (somehow)
-AWS_REGION=${ZONE%?}
+re='[a-zA-Z]'
+if [[ ${ZONE: -1} =~ $re  ]]; then 
+  AWS_REGION=${ZONE%?}
+else 
+  AWS_REGION=$ZONE
+fi
 
 export AWS_DEFAULT_REGION=${AWS_REGION}
 export AWS_DEFAULT_OUTPUT=text
 AWS_CMD="aws ec2"
 AWS_ASG_CMD="aws autoscaling"
 
-VPC_CIDR_BASE=172.20
+VPC_CIDR_BASE=${KUBE_VPC_CIDR_BASE:-172.20}
 MASTER_IP_SUFFIX=.9
 VPC_CIDR=${VPC_CIDR_BASE}.0.0/16
 SUBNET_CIDR=${VPC_CIDR_BASE}.0.0/24
@@ -120,13 +123,20 @@ NODE_SG_NAME="kubernetes-minion-${CLUSTER_ID}"
 # Be sure to map all the ephemeral drives.  We can specify more than we actually have.
 # TODO: Actually mount the correct number (especially if we have more), though this is non-trivial, and
 #  only affects the big storage instance types, which aren't a typical use case right now.
-BLOCK_DEVICE_MAPPINGS_BASE="{\"DeviceName\": \"/dev/sdc\",\"VirtualName\":\"ephemeral0\"},{\"DeviceName\": \"/dev/sdd\",\"VirtualName\":\"ephemeral1\"},{\"DeviceName\": \"/dev/sde\",\"VirtualName\":\"ephemeral2\"},{\"DeviceName\": \"/dev/sdf\",\"VirtualName\":\"ephemeral3\"}"
+EPHEMERAL_BLOCK_DEVICE_MAPPINGS=",{\"DeviceName\": \"/dev/sdc\",\"VirtualName\":\"ephemeral0\"},{\"DeviceName\": \"/dev/sdd\",\"VirtualName\":\"ephemeral1\"},{\"DeviceName\": \"/dev/sde\",\"VirtualName\":\"ephemeral2\"},{\"DeviceName\": \"/dev/sdf\",\"VirtualName\":\"ephemeral3\"}"
+
+# Experimental: If the user sets KUBE_AWS_STORAGE to ebs, use ebs storage
+# in preference to local instance storage We do this by not mounting any
+# instance storage.  We could do this better in future (e.g. making instance
+# storage available for other purposes)
+if [[ "${KUBE_AWS_STORAGE:-}" == "ebs" ]]; then
+  EPHEMERAL_BLOCK_DEVICE_MAPPINGS=""
+fi
 
 # TODO (bburns) Parameterize this for multiple cluster per project
-
 function get_vpc_id {
   $AWS_CMD describe-vpcs \
-           --filters Name=tag:Name,Values=kubernetes-vpc \
+           --filters Name=tag:Name,Values=${VPC_NAME} \
                      Name=tag:KubernetesCluster,Values=${CLUSTER_ID} \
            --query Vpcs[].VpcId
 }
@@ -151,7 +161,7 @@ function get_igw_id {
 function get_elbs_in_vpc {
   # ELB doesn't seem to be on the same platform as the rest of AWS; doesn't support filtering
   aws elb --output json describe-load-balancers  | \
-    python -c "import json,sys; lst = [str(lb['LoadBalancerName']) for lb in json.load(sys.stdin)['LoadBalancerDescriptions'] if lb['VPCId'] == '$1']; print('\n'.join(lst))"
+    python -c "import json,sys; lst = [str(lb['LoadBalancerName']) for lb in json.load(sys.stdin)['LoadBalancerDescriptions'] if 'VPCId' in lb and lb['VPCId'] == '$1']; print('\n'.join(lst))"
 }
 
 function get_instanceid_from_name {
@@ -316,17 +326,8 @@ function detect-security-groups {
 #   AWS_IMAGE
 function detect-image () {
 case "${OS_DISTRIBUTION}" in
-  trusty|coreos)
-    detect-trusty-image
-    ;;
-  vivid)
-    detect-vivid-image
-    ;;
   wily)
     detect-wily-image
-    ;;
-  wheezy)
-    detect-wheezy-image
     ;;
   jessie)
     detect-jessie-image
@@ -336,68 +337,6 @@ case "${OS_DISTRIBUTION}" in
     exit 2
     ;;
 esac
-}
-
-# Detects the AMI to use for trusty (considering the region)
-# Used by CoreOS & Ubuntu
-#
-# Vars set:
-#   AWS_IMAGE
-function detect-trusty-image () {
-  # This is the ubuntu 14.04 image for <region>, amd64, hvm:ebs-ssd
-  # See here: http://cloud-images.ubuntu.com/locator/ec2/ for other images
-  # This will need to be updated from time to time as amis are deprecated
-  if [[ -z "${AWS_IMAGE-}" ]]; then
-    case "${AWS_REGION}" in
-      ap-northeast-1)
-        AWS_IMAGE=ami-93876e93
-        ;;
-
-      ap-southeast-1)
-        AWS_IMAGE=ami-66546234
-        ;;
-
-      eu-central-1)
-        AWS_IMAGE=ami-e2a694ff
-        ;;
-
-      eu-west-1)
-        AWS_IMAGE=ami-d7fd6ea0
-        ;;
-
-      sa-east-1)
-        AWS_IMAGE=ami-a357eebe
-        ;;
-
-      us-east-1)
-        AWS_IMAGE=ami-6089d208
-        ;;
-
-      us-west-1)
-        AWS_IMAGE=ami-cf7d998b
-        ;;
-
-      cn-north-1)
-        AWS_IMAGE=ami-d436a4ed
-        ;;
-
-      us-gov-west-1)
-        AWS_IMAGE=ami-01523322
-        ;;
-
-      ap-southeast-2)
-        AWS_IMAGE=ami-cd4e3ff7
-        ;;
-
-      us-west-2)
-        AWS_IMAGE=ami-3b14370b
-        ;;
-
-      *)
-        echo "Please specify AWS_IMAGE directly (region ${AWS_REGION} not recognized)"
-        exit 1
-    esac
-  fi
 }
 
 # Detects the RootDevice to use in the Block Device Mapping (considering the AMI)
@@ -417,8 +356,8 @@ function detect-root-device {
       ROOT_DEVICE_NODE=$($AWS_CMD describe-images --image-ids ${node_image} --query 'Images[].RootDeviceName')
   fi
 
-  MASTER_BLOCK_DEVICE_MAPPINGS="[{\"DeviceName\":\"${ROOT_DEVICE_MASTER}\",\"Ebs\":{\"DeleteOnTermination\":true,\"VolumeSize\":${MASTER_ROOT_DISK_SIZE},\"VolumeType\":\"${MASTER_ROOT_DISK_TYPE}\"}}, ${BLOCK_DEVICE_MAPPINGS_BASE}]"
-  NODE_BLOCK_DEVICE_MAPPINGS="[{\"DeviceName\":\"${ROOT_DEVICE_NODE}\",\"Ebs\":{\"DeleteOnTermination\":true,\"VolumeSize\":${NODE_ROOT_DISK_SIZE},\"VolumeType\":\"${NODE_ROOT_DISK_TYPE}\"}}, ${BLOCK_DEVICE_MAPPINGS_BASE}]"
+  MASTER_BLOCK_DEVICE_MAPPINGS="[{\"DeviceName\":\"${ROOT_DEVICE_MASTER}\",\"Ebs\":{\"DeleteOnTermination\":true,\"VolumeSize\":${MASTER_ROOT_DISK_SIZE},\"VolumeType\":\"${MASTER_ROOT_DISK_TYPE}\"}} ${EPHEMERAL_BLOCK_DEVICE_MAPPINGS}]"
+  NODE_BLOCK_DEVICE_MAPPINGS="[{\"DeviceName\":\"${ROOT_DEVICE_NODE}\",\"Ebs\":{\"DeleteOnTermination\":true,\"VolumeSize\":${NODE_ROOT_DISK_SIZE},\"VolumeType\":\"${NODE_ROOT_DISK_TYPE}\"}} ${EPHEMERAL_BLOCK_DEVICE_MAPPINGS}]"
 }
 
 # Computes the AWS fingerprint for a public key file ($1)
@@ -596,22 +535,24 @@ function ensure-master-ip {
   fi
 }
 
-# Creates a new DHCP option set configured correctly for Kubernetes
+# Creates a new DHCP option set configured correctly for Kubernetes when DHCP_OPTION_SET_ID is not specified
 # Sets DHCP_OPTION_SET_ID
 function create-dhcp-option-set () {
-  case "${AWS_REGION}" in
-    us-east-1)
-      OPTION_SET_DOMAIN=ec2.internal
-      ;;
+  if [[ -z ${DHCP_OPTION_SET_ID-} ]]; then
+    case "${AWS_REGION}" in
+      us-east-1)
+        OPTION_SET_DOMAIN=ec2.internal
+        ;;
 
-    *)
-      OPTION_SET_DOMAIN="${AWS_REGION}.compute.internal"
-  esac
+      *)
+        OPTION_SET_DOMAIN="${AWS_REGION}.compute.internal"
+    esac
 
-  DHCP_OPTION_SET_ID=$($AWS_CMD create-dhcp-options --dhcp-configuration Key=domain-name,Values=${OPTION_SET_DOMAIN} Key=domain-name-servers,Values=AmazonProvidedDNS --query DhcpOptions.DhcpOptionsId)
+    DHCP_OPTION_SET_ID=$($AWS_CMD create-dhcp-options --dhcp-configuration Key=domain-name,Values=${OPTION_SET_DOMAIN} Key=domain-name-servers,Values=AmazonProvidedDNS --query DhcpOptions.DhcpOptionsId)
 
-  add-tag ${DHCP_OPTION_SET_ID} Name kubernetes-dhcp-option-set
-  add-tag ${DHCP_OPTION_SET_ID} KubernetesCluster ${CLUSTER_ID}
+    add-tag ${DHCP_OPTION_SET_ID} Name kubernetes-dhcp-option-set
+    add-tag ${DHCP_OPTION_SET_ID} KubernetesCluster ${CLUSTER_ID}
+  fi
 
   $AWS_CMD associate-dhcp-options --dhcp-options-id ${DHCP_OPTION_SET_ID} --vpc-id ${VPC_ID} > $LOG
 
@@ -878,7 +819,7 @@ function vpc-setup {
 	  VPC_ID=$($AWS_CMD create-vpc --cidr-block ${VPC_CIDR} --query Vpc.VpcId)
 	  $AWS_CMD modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-support '{"Value": true}' > $LOG
 	  $AWS_CMD modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-hostnames '{"Value": true}' > $LOG
-	  add-tag $VPC_ID Name kubernetes-vpc
+	  add-tag $VPC_ID Name ${VPC_NAME}
 	  add-tag $VPC_ID KubernetesCluster ${CLUSTER_ID}
   fi
 
@@ -990,14 +931,12 @@ function kube-up {
   authorize-security-group-ingress "${MASTER_SG_ID}" "--source-group ${NODE_SG_ID} --protocol all"
   authorize-security-group-ingress "${NODE_SG_ID}" "--source-group ${MASTER_SG_ID} --protocol all"
 
-  # TODO(justinsb): Would be fairly easy to replace 0.0.0.0/0 in these rules
-
   # SSH is open to the world
-  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 22 --cidr 0.0.0.0/0"
-  authorize-security-group-ingress "${NODE_SG_ID}" "--protocol tcp --port 22 --cidr 0.0.0.0/0"
+  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 22 --cidr ${SSH_CIDR}"
+  authorize-security-group-ingress "${NODE_SG_ID}" "--protocol tcp --port 22 --cidr ${SSH_CIDR}"
 
   # HTTPS to the master is allowed (for API access)
-  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 443 --cidr 0.0.0.0/0"
+  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 443 --cidr ${HTTP_API_CIDR}"
 
   # KUBE_USE_EXISTING_MASTER is used to add minions to an existing master
   if [[ "${KUBE_USE_EXISTING_MASTER:-}" == "true" ]]; then
@@ -1285,10 +1224,14 @@ function build-config() {
   export KUBE_CERT="${CERT_DIR}/pki/issued/kubecfg.crt"
   export KUBE_KEY="${CERT_DIR}/pki/private/kubecfg.key"
   export CA_CERT="${CERT_DIR}/pki/ca.crt"
-  export CONTEXT="aws_${INSTANCE_PREFIX}"
+  export CONTEXT="${CONFIG_CONTEXT}"
   (
    umask 077
+
+   # Update the user's kubeconfig to include credentials for this apiserver.
    create-kubeconfig
+
+   create-kubeconfig-for-federation
   )
 }
 
@@ -1315,7 +1258,7 @@ function check-cluster() {
         local output=`check-minion ${minion_ip}`
         echo $output
         if [[ "${output}" != "working" ]]; then
-          if (( attempt > 9 )); then
+          if (( attempt > 20 )); then
             echo
             echo -e "${color_red}Your cluster is unlikely to work correctly." >&2
             echo "Please run ./cluster/kube-down.sh and re-create the" >&2
@@ -1399,6 +1342,11 @@ function kube-down {
         wait-for-instance-state ${instance_id} "terminated"
       done
       echo "All instances deleted"
+    fi
+    if [[ -n $(${AWS_ASG_CMD} describe-launch-configurations --launch-configuration-names ${ASG_NAME} --query LaunchConfigurations[].LaunchConfigurationName) ]]; then
+      echo "Warning: default auto-scaling launch configuration ${ASG_NAME} still exists, attempting to delete"
+      echo "  (This may happen if kube-up leaves just the launch configuration but no auto-scaling group.)"
+      ${AWS_ASG_CMD} delete-launch-configuration --launch-configuration-name ${ASG_NAME} || true
     fi
 
     find-master-pd
@@ -1485,6 +1433,18 @@ function kube-down {
 
     echo "Deleting VPC: ${vpc_id}"
     $AWS_CMD delete-vpc --vpc-id $vpc_id > $LOG
+  else
+    echo "" >&2
+    echo -e "${color_red}Cluster NOT deleted!${color_norm}" >&2
+    echo "" >&2
+    echo "No VPC was found with tag KubernetesCluster=${CLUSTER_ID}" >&2
+    echo "" >&2
+    echo "If you are trying to delete a cluster in a shared VPC," >&2
+    echo "please consider using one of the methods in the kube-deploy repo." >&2
+    echo "See: https://github.com/kubernetes/kube-deploy/blob/master/docs/delete_cluster.md" >&2
+    echo "" >&2
+    echo "Note: You may be seeing this message may be because the cluster was already deleted, or" >&2
+    echo "has a name other than '${CLUSTER_ID}'." >&2
   fi
 }
 
@@ -1592,7 +1552,7 @@ function ssh-to-node {
 
   local ip=$(get_ssh_hostname ${node})
 
-  for try in $(seq 1 5); do
+  for try in {1..5}; do
     if ssh -oLogLevel=quiet -oConnectTimeout=30 -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" ${SSH_USER}@${ip} "echo test > /dev/null"; then
       break
     fi

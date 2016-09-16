@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ fi
 
 block_devices=()
 
-ephemeral_devices=$(curl --silent http://169.254.169.254/2014-11-05/meta-data/block-device-mapping/ | grep ephemeral)
+ephemeral_devices=$( (curl --silent http://169.254.169.254/2014-11-05/meta-data/block-device-mapping/ | grep ephemeral) || true )
 for ephemeral_device in $ephemeral_devices; do
   echo "Checking ephemeral device: ${ephemeral_device}"
   aws_device=$(curl --silent http://169.254.169.254/2014-11-05/meta-data/block-device-mapping/${ephemeral_device})

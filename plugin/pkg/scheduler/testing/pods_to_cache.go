@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,12 +25,9 @@ import (
 // PodsToCache is used for testing
 type PodsToCache []*api.Pod
 
-func (p PodsToCache) AssumePodIfBindSucceed(pod *api.Pod, bind func() bool) error {
-	if !bind() {
-		return nil
-	}
-	return nil
-}
+func (p PodsToCache) AssumePod(pod *api.Pod) error { return nil }
+
+func (p PodsToCache) ForgetPod(pod *api.Pod) error { return nil }
 
 func (p PodsToCache) AddPod(pod *api.Pod) error { return nil }
 
@@ -38,8 +35,14 @@ func (p PodsToCache) UpdatePod(oldPod, newPod *api.Pod) error { return nil }
 
 func (p PodsToCache) RemovePod(pod *api.Pod) error { return nil }
 
-func (p PodsToCache) GetNodeNameToInfoMap() (map[string]*schedulercache.NodeInfo, error) {
-	return schedulercache.CreateNodeNameToInfoMap(p), nil
+func (p PodsToCache) AddNode(node *api.Node) error { return nil }
+
+func (p PodsToCache) UpdateNode(oldNode, newNode *api.Node) error { return nil }
+
+func (p PodsToCache) RemoveNode(node *api.Node) error { return nil }
+
+func (p PodsToCache) UpdateNodeNameToInfoMap(infoMap map[string]*schedulercache.NodeInfo) error {
+	return nil
 }
 
 func (p PodsToCache) List(s labels.Selector) (selected []*api.Pod, err error) {

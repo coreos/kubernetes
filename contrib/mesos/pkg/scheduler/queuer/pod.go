@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ func (p *Pod) GetUID() string {
 
 // implements Deadlined
 func (dp *Pod) Deadline() (time.Time, bool) {
-	if dp.Deadline != nil {
+	if dp.deadline != nil {
 		return *(dp.deadline), true
 	}
 	return time.Time{}, false

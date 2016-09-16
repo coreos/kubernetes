@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,50 +18,57 @@ package etcd
 
 import (
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/cachesize"
 	"k8s.io/kubernetes/pkg/registry/generic"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/registry/limitrange"
 	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/storage"
 )
 
 type REST struct {
-	*etcdgeneric.Etcd
+	*registry.Store
 }
 
 // NewREST returns a RESTStorage object that will work against horizontal pod autoscalers.
 func NewREST(opts generic.RESTOptions) *REST {
-	prefix := "/limitranges"
+	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &api.LimitRangeList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage, cachesize.GetWatchCacheSizeByResource(cachesize.LimitRanges), &api.LimitRange{}, prefix, limitrange.Strategy, newListFunc)
+	storageInterface, dFunc := opts.Decorator(
+		opts.StorageConfig,
+		cachesize.GetWatchCacheSizeByResource(cachesize.LimitRanges),
+		&api.LimitRange{},
+		prefix,
+		limitrange.Strategy,
+		newListFunc,
+		storage.NoTriggerPublisher,
+	)
 
-	store := &etcdgeneric.Etcd{
+	store := &registry.Store{
 		NewFunc:     func() runtime.Object { return &api.LimitRange{} },
 		NewListFunc: newListFunc,
 		KeyRootFunc: func(ctx api.Context) string {
-			return etcdgeneric.NamespaceKeyRootFunc(ctx, prefix)
+			return registry.NamespaceKeyRootFunc(ctx, prefix)
 		},
 		KeyFunc: func(ctx api.Context, id string) (string, error) {
-			return etcdgeneric.NamespaceKeyFunc(ctx, prefix, id)
+			return registry.NamespaceKeyFunc(ctx, prefix, id)
 		},
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
 			return obj.(*api.LimitRange).Name, nil
 		},
-		PredicateFunc: func(label labels.Selector, field fields.Selector) generic.Matcher {
-			return limitrange.MatchLimitRange(label, field)
-		},
+		PredicateFunc:           limitrange.MatchLimitRange,
 		QualifiedResource:       api.Resource("limitranges"),
+		EnableGarbageCollection: opts.EnableGarbageCollection,
 		DeleteCollectionWorkers: opts.DeleteCollectionWorkers,
 
 		CreateStrategy: limitrange.Strategy,
 		UpdateStrategy: limitrange.Strategy,
+		DeleteStrategy: limitrange.Strategy,
 		ExportStrategy: limitrange.Strategy,
 
-		Storage: storageInterface,
+		Storage:     storageInterface,
+		DestroyFunc: dFunc,
 	}
 	return &REST{store}
 }

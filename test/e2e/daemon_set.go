@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,10 +28,12 @@ import (
 	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
+	clientsetadapter "k8s.io/kubernetes/pkg/client/unversioned/adapters/internalclientset"
 	"k8s.io/kubernetes/pkg/kubectl"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/wait"
+	"k8s.io/kubernetes/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -53,25 +55,25 @@ const (
 // happen.  In the future, running in parallel may work if we have an eviction
 // model which lets the DS controller kick out other pods to make room.
 // See http://issues.k8s.io/21767 for more details
-var _ = KubeDescribe("Daemon set [Serial]", func() {
-	var f *Framework
+var _ = framework.KubeDescribe("Daemon set [Serial]", func() {
+	var f *framework.Framework
 
 	AfterEach(func() {
 		if daemonsets, err := f.Client.DaemonSets(f.Namespace.Name).List(api.ListOptions{}); err == nil {
-			Logf("daemonset: %s", runtime.EncodeOrDie(api.Codecs.LegacyCodec(registered.EnabledVersions()...), daemonsets))
+			framework.Logf("daemonset: %s", runtime.EncodeOrDie(api.Codecs.LegacyCodec(registered.EnabledVersions()...), daemonsets))
 		} else {
-			Logf("unable to dump daemonsets: %v", err)
+			framework.Logf("unable to dump daemonsets: %v", err)
 		}
 		if pods, err := f.Client.Pods(f.Namespace.Name).List(api.ListOptions{}); err == nil {
-			Logf("pods: %s", runtime.EncodeOrDie(api.Codecs.LegacyCodec(registered.EnabledVersions()...), pods))
+			framework.Logf("pods: %s", runtime.EncodeOrDie(api.Codecs.LegacyCodec(registered.EnabledVersions()...), pods))
 		} else {
-			Logf("unable to dump pods: %v", err)
+			framework.Logf("unable to dump pods: %v", err)
 		}
 		err := clearDaemonSetNodeLabels(f.Client)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	f = NewDefaultFramework("daemonsets")
+	f = framework.NewDefaultFramework("daemonsets")
 
 	image := "gcr.io/google_containers/serve_hostname:v1.4"
 	dsName := "daemon-set"
@@ -89,7 +91,7 @@ var _ = KubeDescribe("Daemon set [Serial]", func() {
 	It("should run and stop simple daemon", func() {
 		label := map[string]string{daemonsetNameLabel: dsName}
 
-		Logf("Creating simple daemon set %s", dsName)
+		framework.Logf("Creating simple daemon set %s", dsName)
 		_, err := c.DaemonSets(ns).Create(&extensions.DaemonSet{
 			ObjectMeta: api.ObjectMeta{
 				Name: dsName,
@@ -113,8 +115,8 @@ var _ = KubeDescribe("Daemon set [Serial]", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		defer func() {
-			Logf("Check that reaper kills all daemon pods for %s", dsName)
-			dsReaper, err := kubectl.ReaperFor(extensions.Kind("DaemonSet"), c)
+			framework.Logf("Check that reaper kills all daemon pods for %s", dsName)
+			dsReaper, err := kubectl.ReaperFor(extensions.Kind("DaemonSet"), clientsetadapter.FromUnversionedClient(c))
 			Expect(err).NotTo(HaveOccurred())
 			err = dsReaper.Stop(ns, dsName, 0, nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -146,7 +148,7 @@ var _ = KubeDescribe("Daemon set [Serial]", func() {
 	It("should run and stop complex daemon", func() {
 		complexLabel := map[string]string{daemonsetNameLabel: dsName}
 		nodeSelector := map[string]string{daemonsetColorLabel: "blue"}
-		Logf("Creating daemon with a node selector %s", dsName)
+		framework.Logf("Creating daemon with a node selector %s", dsName)
 		_, err := c.DaemonSets(ns).Create(&extensions.DaemonSet{
 			ObjectMeta: api.ObjectMeta{
 				Name: dsName,
@@ -177,7 +179,73 @@ var _ = KubeDescribe("Daemon set [Serial]", func() {
 		Expect(err).NotTo(HaveOccurred(), "error waiting for daemon pods to be running on no nodes")
 
 		By("Change label of node, check that daemon pod is launched.")
-		nodeList := ListSchedulableNodesOrDie(f.Client)
+		nodeList := framework.GetReadySchedulableNodesOrDie(f.Client)
+		Expect(len(nodeList.Items)).To(BeNumerically(">", 0))
+		newNode, err := setDaemonSetNodeLabels(c, nodeList.Items[0].Name, nodeSelector)
+		Expect(err).NotTo(HaveOccurred(), "error setting labels on node")
+		daemonSetLabels, _ := separateDaemonSetNodeLabels(newNode.Labels)
+		Expect(len(daemonSetLabels)).To(Equal(1))
+		err = wait.Poll(dsRetryPeriod, dsRetryTimeout, checkDaemonPodOnNodes(f, complexLabel, []string{newNode.Name}))
+		Expect(err).NotTo(HaveOccurred(), "error waiting for daemon pods to be running on new nodes")
+
+		By("remove the node selector and wait for daemons to be unscheduled")
+		_, err = setDaemonSetNodeLabels(c, nodeList.Items[0].Name, map[string]string{})
+		Expect(err).NotTo(HaveOccurred(), "error removing labels on node")
+		Expect(wait.Poll(dsRetryPeriod, dsRetryTimeout, checkRunningOnNoNodes(f, complexLabel))).
+			NotTo(HaveOccurred(), "error waiting for daemon pod to not be running on nodes")
+
+		By("We should now be able to delete the daemon set.")
+		Expect(c.DaemonSets(ns).Delete(dsName)).NotTo(HaveOccurred())
+
+	})
+
+	It("should run and stop complex daemon with node affinity", func() {
+		complexLabel := map[string]string{daemonsetNameLabel: dsName}
+		nodeSelector := map[string]string{daemonsetColorLabel: "blue"}
+		framework.Logf("Creating daemon with a node affinity %s", dsName)
+		affinity := map[string]string{
+			api.AffinityAnnotationKey: fmt.Sprintf(`
+				{"nodeAffinity": { "requiredDuringSchedulingIgnoredDuringExecution": {
+					"nodeSelectorTerms": [{
+						"matchExpressions": [{
+							"key": "%s",
+							"operator": "In",
+							"values": ["%s"]
+					}]
+				}]
+			}}}`, daemonsetColorLabel, nodeSelector[daemonsetColorLabel]),
+		}
+		_, err := c.DaemonSets(ns).Create(&extensions.DaemonSet{
+			ObjectMeta: api.ObjectMeta{
+				Name: dsName,
+			},
+			Spec: extensions.DaemonSetSpec{
+				Selector: &unversioned.LabelSelector{MatchLabels: complexLabel},
+				Template: api.PodTemplateSpec{
+					ObjectMeta: api.ObjectMeta{
+						Labels:      complexLabel,
+						Annotations: affinity,
+					},
+					Spec: api.PodSpec{
+						Containers: []api.Container{
+							{
+								Name:  dsName,
+								Image: image,
+								Ports: []api.ContainerPort{{ContainerPort: 9376}},
+							},
+						},
+					},
+				},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Initially, daemon pods should not be running on any nodes.")
+		err = wait.Poll(dsRetryPeriod, dsRetryTimeout, checkRunningOnNoNodes(f, complexLabel))
+		Expect(err).NotTo(HaveOccurred(), "error waiting for daemon pods to be running on no nodes")
+
+		By("Change label of node, check that daemon pod is launched.")
+		nodeList := framework.GetReadySchedulableNodesOrDie(f.Client)
 		Expect(len(nodeList.Items)).To(BeNumerically(">", 0))
 		newNode, err := setDaemonSetNodeLabels(c, nodeList.Items[0].Name, nodeSelector)
 		Expect(err).NotTo(HaveOccurred(), "error setting labels on node")
@@ -212,7 +280,7 @@ func separateDaemonSetNodeLabels(labels map[string]string) (map[string]string, m
 }
 
 func clearDaemonSetNodeLabels(c *client.Client) error {
-	nodeList := ListSchedulableNodesOrDie(c)
+	nodeList := framework.GetReadySchedulableNodesOrDie(c)
 	for _, node := range nodeList.Items {
 		_, err := setDaemonSetNodeLabels(c, node.Name, map[string]string{})
 		if err != nil {
@@ -248,7 +316,7 @@ func setDaemonSetNodeLabels(c *client.Client, nodeName string, labels map[string
 			return true, err
 		}
 		if se, ok := err.(*apierrs.StatusError); ok && se.ErrStatus.Reason == unversioned.StatusReasonConflict {
-			Logf("failed to update node due to resource version conflict")
+			framework.Logf("failed to update node due to resource version conflict")
 			return false, nil
 		}
 		return false, err
@@ -262,7 +330,7 @@ func setDaemonSetNodeLabels(c *client.Client, nodeName string, labels map[string
 	return newNode, nil
 }
 
-func checkDaemonPodOnNodes(f *Framework, selector map[string]string, nodeNames []string) func() (bool, error) {
+func checkDaemonPodOnNodes(f *framework.Framework, selector map[string]string, nodeNames []string) func() (bool, error) {
 	return func() (bool, error) {
 		selector := labels.Set(selector).AsSelector()
 		options := api.ListOptions{LabelSelector: selector}
@@ -276,7 +344,7 @@ func checkDaemonPodOnNodes(f *Framework, selector map[string]string, nodeNames [
 		for _, pod := range pods {
 			nodesToPodCount[pod.Spec.NodeName] += 1
 		}
-		Logf("nodesToPodCount: %#v", nodesToPodCount)
+		framework.Logf("nodesToPodCount: %#v", nodesToPodCount)
 
 		// Ensure that exactly 1 pod is running on all nodes in nodeNames.
 		for _, nodeName := range nodeNames {
@@ -292,10 +360,10 @@ func checkDaemonPodOnNodes(f *Framework, selector map[string]string, nodeNames [
 	}
 }
 
-func checkRunningOnAllNodes(f *Framework, selector map[string]string) func() (bool, error) {
+func checkRunningOnAllNodes(f *framework.Framework, selector map[string]string) func() (bool, error) {
 	return func() (bool, error) {
 		nodeList, err := f.Client.Nodes().List(api.ListOptions{})
-		expectNoError(err)
+		framework.ExpectNoError(err)
 		nodeNames := make([]string, 0)
 		for _, node := range nodeList.Items {
 			nodeNames = append(nodeNames, node.Name)
@@ -304,6 +372,6 @@ func checkRunningOnAllNodes(f *Framework, selector map[string]string) func() (bo
 	}
 }
 
-func checkRunningOnNoNodes(f *Framework, selector map[string]string) func() (bool, error) {
+func checkRunningOnNoNodes(f *framework.Framework, selector map[string]string) func() (bool, error) {
 	return checkDaemonPodOnNodes(f, selector, make([]string, 0))
 }

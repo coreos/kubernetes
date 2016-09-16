@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,15 +22,14 @@ import (
 	_ "k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
-	"k8s.io/kubernetes/pkg/apis/extensions"
-	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/kubernetes/pkg/apis/autoscaling"
 )
 
 func TestSelectableFieldLabelConversions(t *testing.T) {
 	apitesting.TestSelectableFieldLabelConversionsOfKind(t,
-		testapi.Extensions.GroupVersion().String(),
+		testapi.Autoscaling.GroupVersion().String(),
 		"Autoscaler",
-		labels.Set(AutoscalerToSelectableFields(&extensions.HorizontalPodAutoscaler{})),
+		AutoscalerToSelectableFields(&autoscaling.HorizontalPodAutoscaler{}),
 		nil,
 	)
 }

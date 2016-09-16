@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -87,13 +87,13 @@ func TestSetKubernetesDefaultsUserAgent(t *testing.T) {
 }
 
 func TestRESTClientRequires(t *testing.T) {
-	if _, err := RESTClientFor(&Config{Host: "127.0.0.1", ContentConfig: ContentConfig{Codec: testapi.Default.Codec()}}); err == nil {
+	if _, err := RESTClientFor(&Config{Host: "127.0.0.1", ContentConfig: ContentConfig{NegotiatedSerializer: testapi.Default.NegotiatedSerializer()}}); err == nil {
 		t.Errorf("unexpected non-error")
 	}
 	if _, err := RESTClientFor(&Config{Host: "127.0.0.1", ContentConfig: ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}); err == nil {
 		t.Errorf("unexpected non-error")
 	}
-	if _, err := RESTClientFor(&Config{Host: "127.0.0.1", ContentConfig: ContentConfig{GroupVersion: testapi.Default.GroupVersion(), Codec: testapi.Default.Codec()}}); err != nil {
+	if _, err := RESTClientFor(&Config{Host: "127.0.0.1", ContentConfig: ContentConfig{GroupVersion: testapi.Default.GroupVersion(), NegotiatedSerializer: testapi.Default.NegotiatedSerializer()}}); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,15 +17,17 @@ limitations under the License.
 package core
 
 import (
+	"path"
 	"strings"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 )
 
-func NewRootGetAction(resource, name string) GetActionImpl {
+func NewRootGetAction(resource unversioned.GroupVersionResource, name string) GetActionImpl {
 	action := GetActionImpl{}
 	action.Verb = "get"
 	action.Resource = resource
@@ -34,7 +36,7 @@ func NewRootGetAction(resource, name string) GetActionImpl {
 	return action
 }
 
-func NewGetAction(resource, namespace, name string) GetActionImpl {
+func NewGetAction(resource unversioned.GroupVersionResource, namespace, name string) GetActionImpl {
 	action := GetActionImpl{}
 	action.Verb = "get"
 	action.Resource = resource
@@ -44,7 +46,7 @@ func NewGetAction(resource, namespace, name string) GetActionImpl {
 	return action
 }
 
-func NewRootListAction(resource string, opts api.ListOptions) ListActionImpl {
+func NewRootListAction(resource unversioned.GroupVersionResource, opts api.ListOptions) ListActionImpl {
 	action := ListActionImpl{}
 	action.Verb = "list"
 	action.Resource = resource
@@ -61,7 +63,7 @@ func NewRootListAction(resource string, opts api.ListOptions) ListActionImpl {
 	return action
 }
 
-func NewListAction(resource, namespace string, opts api.ListOptions) ListActionImpl {
+func NewListAction(resource unversioned.GroupVersionResource, namespace string, opts api.ListOptions) ListActionImpl {
 	action := ListActionImpl{}
 	action.Verb = "list"
 	action.Resource = resource
@@ -79,7 +81,7 @@ func NewListAction(resource, namespace string, opts api.ListOptions) ListActionI
 	return action
 }
 
-func NewRootCreateAction(resource string, object runtime.Object) CreateActionImpl {
+func NewRootCreateAction(resource unversioned.GroupVersionResource, object runtime.Object) CreateActionImpl {
 	action := CreateActionImpl{}
 	action.Verb = "create"
 	action.Resource = resource
@@ -88,7 +90,7 @@ func NewRootCreateAction(resource string, object runtime.Object) CreateActionImp
 	return action
 }
 
-func NewCreateAction(resource, namespace string, object runtime.Object) CreateActionImpl {
+func NewCreateAction(resource unversioned.GroupVersionResource, namespace string, object runtime.Object) CreateActionImpl {
 	action := CreateActionImpl{}
 	action.Verb = "create"
 	action.Resource = resource
@@ -98,7 +100,7 @@ func NewCreateAction(resource, namespace string, object runtime.Object) CreateAc
 	return action
 }
 
-func NewRootUpdateAction(resource string, object runtime.Object) UpdateActionImpl {
+func NewRootUpdateAction(resource unversioned.GroupVersionResource, object runtime.Object) UpdateActionImpl {
 	action := UpdateActionImpl{}
 	action.Verb = "update"
 	action.Resource = resource
@@ -107,7 +109,7 @@ func NewRootUpdateAction(resource string, object runtime.Object) UpdateActionImp
 	return action
 }
 
-func NewUpdateAction(resource, namespace string, object runtime.Object) UpdateActionImpl {
+func NewUpdateAction(resource unversioned.GroupVersionResource, namespace string, object runtime.Object) UpdateActionImpl {
 	action := UpdateActionImpl{}
 	action.Verb = "update"
 	action.Resource = resource
@@ -117,26 +119,51 @@ func NewUpdateAction(resource, namespace string, object runtime.Object) UpdateAc
 	return action
 }
 
-func NewRootPatchAction(resource string, object runtime.Object) PatchActionImpl {
+func NewRootPatchAction(resource unversioned.GroupVersionResource, name string, patch []byte) PatchActionImpl {
 	action := PatchActionImpl{}
 	action.Verb = "patch"
 	action.Resource = resource
-	action.Object = object
+	action.Name = name
+	action.Patch = patch
 
 	return action
 }
 
-func NewPatchAction(resource, namespace string, object runtime.Object) PatchActionImpl {
+func NewPatchAction(resource unversioned.GroupVersionResource, namespace string, name string, patch []byte) PatchActionImpl {
 	action := PatchActionImpl{}
 	action.Verb = "patch"
 	action.Resource = resource
 	action.Namespace = namespace
-	action.Object = object
+	action.Name = name
+	action.Patch = patch
 
 	return action
 }
 
-func NewRootUpdateSubresourceAction(resource, subresource string, object runtime.Object) UpdateActionImpl {
+func NewRootPatchSubresourceAction(resource unversioned.GroupVersionResource, name string, patch []byte, subresources ...string) PatchActionImpl {
+	action := PatchActionImpl{}
+	action.Verb = "patch"
+	action.Resource = resource
+	action.Subresource = path.Join(subresources...)
+	action.Name = name
+	action.Patch = patch
+
+	return action
+}
+
+func NewPatchSubresourceAction(resource unversioned.GroupVersionResource, namespace, name string, patch []byte, subresources ...string) PatchActionImpl {
+	action := PatchActionImpl{}
+	action.Verb = "patch"
+	action.Resource = resource
+	action.Subresource = path.Join(subresources...)
+	action.Namespace = namespace
+	action.Name = name
+	action.Patch = patch
+
+	return action
+}
+
+func NewRootUpdateSubresourceAction(resource unversioned.GroupVersionResource, subresource string, object runtime.Object) UpdateActionImpl {
 	action := UpdateActionImpl{}
 	action.Verb = "update"
 	action.Resource = resource
@@ -145,7 +172,7 @@ func NewRootUpdateSubresourceAction(resource, subresource string, object runtime
 
 	return action
 }
-func NewUpdateSubresourceAction(resource, subresource, namespace string, object runtime.Object) UpdateActionImpl {
+func NewUpdateSubresourceAction(resource unversioned.GroupVersionResource, subresource string, namespace string, object runtime.Object) UpdateActionImpl {
 	action := UpdateActionImpl{}
 	action.Verb = "update"
 	action.Resource = resource
@@ -156,7 +183,7 @@ func NewUpdateSubresourceAction(resource, subresource, namespace string, object 
 	return action
 }
 
-func NewRootDeleteAction(resource, name string) DeleteActionImpl {
+func NewRootDeleteAction(resource unversioned.GroupVersionResource, name string) DeleteActionImpl {
 	action := DeleteActionImpl{}
 	action.Verb = "delete"
 	action.Resource = resource
@@ -165,7 +192,7 @@ func NewRootDeleteAction(resource, name string) DeleteActionImpl {
 	return action
 }
 
-func NewDeleteAction(resource, namespace, name string) DeleteActionImpl {
+func NewDeleteAction(resource unversioned.GroupVersionResource, namespace, name string) DeleteActionImpl {
 	action := DeleteActionImpl{}
 	action.Verb = "delete"
 	action.Resource = resource
@@ -175,7 +202,7 @@ func NewDeleteAction(resource, namespace, name string) DeleteActionImpl {
 	return action
 }
 
-func NewRootDeleteCollectionAction(resource string, opts api.ListOptions) DeleteCollectionActionImpl {
+func NewRootDeleteCollectionAction(resource unversioned.GroupVersionResource, opts api.ListOptions) DeleteCollectionActionImpl {
 	action := DeleteCollectionActionImpl{}
 	action.Verb = "delete-collection"
 	action.Resource = resource
@@ -192,7 +219,7 @@ func NewRootDeleteCollectionAction(resource string, opts api.ListOptions) Delete
 	return action
 }
 
-func NewDeleteCollectionAction(resource, namespace string, opts api.ListOptions) DeleteCollectionActionImpl {
+func NewDeleteCollectionAction(resource unversioned.GroupVersionResource, namespace string, opts api.ListOptions) DeleteCollectionActionImpl {
 	action := DeleteCollectionActionImpl{}
 	action.Verb = "delete-collection"
 	action.Resource = resource
@@ -210,7 +237,7 @@ func NewDeleteCollectionAction(resource, namespace string, opts api.ListOptions)
 	return action
 }
 
-func NewRootWatchAction(resource string, opts api.ListOptions) WatchActionImpl {
+func NewRootWatchAction(resource unversioned.GroupVersionResource, opts api.ListOptions) WatchActionImpl {
 	action := WatchActionImpl{}
 	action.Verb = "watch"
 	action.Resource = resource
@@ -227,7 +254,7 @@ func NewRootWatchAction(resource string, opts api.ListOptions) WatchActionImpl {
 	return action
 }
 
-func NewWatchAction(resource, namespace string, opts api.ListOptions) WatchActionImpl {
+func NewWatchAction(resource unversioned.GroupVersionResource, namespace string, opts api.ListOptions) WatchActionImpl {
 	action := WatchActionImpl{}
 	action.Verb = "watch"
 	action.Resource = resource
@@ -245,7 +272,7 @@ func NewWatchAction(resource, namespace string, opts api.ListOptions) WatchActio
 	return action
 }
 
-func NewProxyGetAction(resource, namespace, scheme, name, port, path string, params map[string]string) ProxyGetActionImpl {
+func NewProxyGetAction(resource unversioned.GroupVersionResource, namespace, scheme, name, port, path string, params map[string]string) ProxyGetActionImpl {
 	action := ProxyGetActionImpl{}
 	action.Verb = "get"
 	action.Resource = resource
@@ -271,7 +298,7 @@ type WatchRestrictions struct {
 type Action interface {
 	GetNamespace() string
 	GetVerb() string
-	GetResource() string
+	GetResource() unversioned.GroupVersionResource
 	GetSubresource() string
 	Matches(verb, resource string) bool
 }
@@ -323,7 +350,7 @@ type ProxyGetAction interface {
 type ActionImpl struct {
 	Namespace   string
 	Verb        string
-	Resource    string
+	Resource    unversioned.GroupVersionResource
 	Subresource string
 }
 
@@ -333,7 +360,7 @@ func (a ActionImpl) GetNamespace() string {
 func (a ActionImpl) GetVerb() string {
 	return a.Verb
 }
-func (a ActionImpl) GetResource() string {
+func (a ActionImpl) GetResource() unversioned.GroupVersionResource {
 	return a.Resource
 }
 func (a ActionImpl) GetSubresource() string {
@@ -341,7 +368,7 @@ func (a ActionImpl) GetSubresource() string {
 }
 func (a ActionImpl) Matches(verb, resource string) bool {
 	return strings.ToLower(verb) == strings.ToLower(a.Verb) &&
-		strings.ToLower(resource) == strings.ToLower(a.Resource)
+		strings.ToLower(resource) == strings.ToLower(a.Resource.Resource)
 }
 
 type GenericActionImpl struct {
@@ -391,11 +418,16 @@ func (a UpdateActionImpl) GetObject() runtime.Object {
 
 type PatchActionImpl struct {
 	ActionImpl
-	Object runtime.Object
+	Name  string
+	Patch []byte
 }
 
-func (a PatchActionImpl) GetObject() runtime.Object {
-	return a.Object
+func (a PatchActionImpl) GetName() string {
+	return a.Name
+}
+
+func (a PatchActionImpl) GetPatch() []byte {
+	return a.Patch
 }
 
 type DeleteActionImpl struct {

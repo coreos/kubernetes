@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ set -o pipefail
 set -o xtrace
 
 export REPO_DIR=${REPO_DIR:-$(pwd)}
+export HOST_ARTIFACTS_DIR=${WORKSPACE}/_artifacts
+mkdir -p "${HOST_ARTIFACTS_DIR}"
 
 # Run the kubekins container, mapping in docker (so we can launch containers),
 # the repo directory, and the artifacts output directory.
@@ -34,13 +36,14 @@ export REPO_DIR=${REPO_DIR:-$(pwd)}
 # provided must be resolvable on the *HOST*, not the container.
 
 docker run --rm=true \
+  --privileged=true \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$(which docker)":/bin/docker \
   -v "${REPO_DIR}":/go/src/k8s.io/kubernetes \
   -v "${WORKSPACE}/_artifacts":/workspace/artifacts \
   -v /etc/localtime:/etc/localtime:ro \
   -e "KUBE_FORCE_VERIFY_CHECKS=${KUBE_FORCE_VERIFY_CHECKS:-}" \
   -e "KUBE_VERIFY_GIT_BRANCH=${KUBE_VERIFY_GIT_BRANCH:-}" \
   -e "REPO_DIR=${REPO_DIR}" \
-  -i gcr.io/google_containers/kubekins-test:0.8 \
-  bash -c "cd kubernetes && ./hack/jenkins/test-dockerized.sh"
+  -e "HOST_ARTIFACTS_DIR=${HOST_ARTIFACTS_DIR}" \
+  -i gcr.io/google_containers/kubekins-test:v20160822 \
+  bash -c "cd kubernetes && ${KUBE_TEST_SCRIPT:-./hack/jenkins/test-dockerized.sh}"

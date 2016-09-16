@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -132,6 +132,34 @@ func MakeParams(cmd *cobra.Command, params []GeneratorParam) map[string]interfac
 		}
 	}
 	return result
+}
+
+func MakeProtocols(protocols map[string]string) string {
+	out := []string{}
+	for key, value := range protocols {
+		out = append(out, fmt.Sprintf("%s/%s", key, value))
+	}
+	return strings.Join(out, ",")
+}
+
+func ParseProtocols(protocols interface{}) (map[string]string, error) {
+	protocolsString, isString := protocols.(string)
+	if !isString {
+		return nil, fmt.Errorf("expected string, found %v", protocols)
+	}
+	if len(protocolsString) == 0 {
+		return nil, fmt.Errorf("no protocols passed")
+	}
+	portProtocolMap := map[string]string{}
+	protocolsSlice := strings.Split(protocolsString, ",")
+	for ix := range protocolsSlice {
+		portProtocol := strings.Split(protocolsSlice[ix], "/")
+		if len(portProtocol) != 2 {
+			return nil, fmt.Errorf("unexpected port protocol mapping: %s", protocolsSlice[ix])
+		}
+		portProtocolMap[portProtocol[0]] = portProtocol[1]
+	}
+	return portProtocolMap, nil
 }
 
 func MakeLabels(labels map[string]string) string {

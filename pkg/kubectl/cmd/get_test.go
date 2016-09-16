@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,11 +33,15 @@ import (
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/restclient"
+	"k8s.io/kubernetes/pkg/client/typed/discovery"
 	"k8s.io/kubernetes/pkg/client/unversioned/fake"
 	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/runtime/serializer"
+	"k8s.io/kubernetes/pkg/runtime/serializer/json"
+	"k8s.io/kubernetes/pkg/runtime/serializer/streaming"
 	"k8s.io/kubernetes/pkg/util/diff"
 	"k8s.io/kubernetes/pkg/watch"
-	"k8s.io/kubernetes/pkg/watch/json"
+	"k8s.io/kubernetes/pkg/watch/versioned"
 )
 
 func testData() (*api.PodList, *api.ServiceList, *api.ReplicationControllerList) {
@@ -86,6 +90,26 @@ func testData() (*api.PodList, *api.ServiceList, *api.ReplicationControllerList)
 	return pods, svc, rc
 }
 
+func testDynamicResources() []*discovery.APIGroupResources {
+	return []*discovery.APIGroupResources{
+		{
+			Group: unversioned.APIGroup{
+				Versions: []unversioned.GroupVersionForDiscovery{
+					{Version: "v1"},
+				},
+				PreferredVersion: unversioned.GroupVersionForDiscovery{Version: "v1"},
+			},
+			VersionedResources: map[string][]unversioned.APIResource{
+				"v1": {
+					{Name: "pods", Namespaced: true, Kind: "Pod"},
+					{Name: "services", Namespaced: true, Kind: "Service"},
+					{Name: "replicationcontrollers", Namespaced: true, Kind: "ReplicationController"},
+				},
+			},
+		},
+	}
+}
+
 func testComponentStatusData() *api.ComponentStatusList {
 	good := api.ComponentStatus{
 		Conditions: []api.ComponentCondition{
@@ -115,17 +139,18 @@ func testComponentStatusData() *api.ComponentStatusList {
 
 // Verifies that schemas that are not in the master tree of Kubernetes can be retrieved via Get.
 func TestGetUnknownSchemaObject(t *testing.T) {
-	f, tf, codec := NewTestFactory()
+	f, tf, codec, ns := NewTestFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, &internalType{Name: "foo"})},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &internalType{Name: "foo"})},
 	}
 	tf.Namespace = "test"
 	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"type", "foo"})
 
@@ -178,30 +203,35 @@ func TestGetUnknownSchemaObjectListGeneric(t *testing.T) {
 	}
 	for k, test := range testCases {
 		apiCodec := testapi.Default.Codec()
+		apiNegotiatedSerializer := testapi.Default.NegotiatedSerializer()
 		regularClient := &fake.RESTClient{
-			Codec: apiCodec,
+			NegotiatedSerializer: apiNegotiatedSerializer,
 			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 200, Body: objBody(apiCodec, &api.ReplicationController{ObjectMeta: api.ObjectMeta{Name: "foo"}})}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(apiCodec, &api.ReplicationController{ObjectMeta: api.ObjectMeta{Name: "foo"}})}, nil
 			}),
 		}
 
 		f, tf, codec := NewMixedFactory(regularClient)
+		negotiatedSerializer := serializer.NegotiatedSerializerWrapper(
+			runtime.SerializerInfo{Serializer: codec},
+			runtime.StreamSerializerInfo{})
 		tf.Printer = &testPrinter{}
 		tf.Client = &fake.RESTClient{
-			Codec: codec,
+			NegotiatedSerializer: negotiatedSerializer,
 			Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: 200, Body: objBody(codec, &internalType{Name: "foo"})}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &internalType{Name: "foo"})}, nil
 			}),
 		}
 		tf.Namespace = "test"
 		tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
 		buf := bytes.NewBuffer([]byte{})
-		cmd := NewCmdGet(f, buf)
+		errBuf := bytes.NewBuffer([]byte{})
+		cmd := NewCmdGet(f, buf, errBuf)
 		cmd.SetOutput(buf)
 		cmd.Flags().Set("output", "json")
 
 		cmd.Flags().Set("output-version", test.outputVersion)
-		err := RunGet(f, buf, cmd, []string{"type/foo", "replicationcontrollers/foo"}, &GetOptions{})
+		err := RunGet(f, buf, errBuf, cmd, []string{"type/foo", "replicationcontrollers/foo"}, &GetOptions{})
 		if err != nil {
 			t.Errorf("%s: unexpected error: %v", k, err)
 			continue
@@ -226,20 +256,22 @@ func TestGetUnknownSchemaObjectListGeneric(t *testing.T) {
 
 // Verifies that schemas that are not in the master tree of Kubernetes can be retrieved via Get.
 func TestGetSchemaObject(t *testing.T) {
-	f, tf, _ := NewTestFactory()
+	f, tf, _, _ := NewTestFactory()
 	tf.Mapper = testapi.Default.RESTMapper()
 	tf.Typer = api.Scheme
 	codec := testapi.Default.Codec()
+	ns := testapi.Default.NegotiatedSerializer()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, &api.ReplicationController{ObjectMeta: api.ObjectMeta{Name: "foo"}})},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &api.ReplicationController{ObjectMeta: api.ObjectMeta{Name: "foo"}})},
 	}
 	tf.Namespace = "test"
 	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &unversioned.GroupVersion{Version: "v1"}}}
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.Run(cmd, []string{"replicationcontrollers", "foo"})
 
 	if !strings.Contains(buf.String(), "\"foo\"") {
@@ -250,16 +282,17 @@ func TestGetSchemaObject(t *testing.T) {
 func TestGetObjects(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])},
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"pods", "foo"})
 
@@ -294,17 +327,19 @@ func TestGetSortedObjects(t *testing.T) {
 		},
 	}
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, pods)},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)},
 	}
 	tf.Namespace = "test"
 	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &unversioned.GroupVersion{Version: "v1"}}}
 
 	buf := bytes.NewBuffer([]byte{})
-	cmd := NewCmdGet(f, buf)
+	errBuf := bytes.NewBuffer([]byte{})
+
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	// sorting with metedata.name
@@ -326,18 +361,19 @@ func TestGetSortedObjects(t *testing.T) {
 func TestGetObjectsIdentifiedByFile(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])},
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
-	cmd.Flags().Set("filename", "../../../examples/cassandra/cassandra.yaml")
+	cmd.Flags().Set("filename", "../../../examples/storage/cassandra/cassandra-controller.yaml")
 	cmd.Run(cmd, []string{})
 
 	expected := []runtime.Object{&pods.Items[0]}
@@ -353,16 +389,17 @@ func TestGetObjectsIdentifiedByFile(t *testing.T) {
 func TestGetListObjects(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, pods)},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)},
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"pods"})
 
@@ -396,16 +433,17 @@ func extractResourceList(objs []runtime.Object) ([]runtime.Object, error) {
 func TestGetAllListObjects(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, pods)},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)},
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Flags().Set("show-all", "true")
 	cmd.Run(cmd, []string{"pods"})
@@ -426,16 +464,17 @@ func TestGetAllListObjects(t *testing.T) {
 func TestGetListComponentStatus(t *testing.T) {
 	statuses := testComponentStatusData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, statuses)},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, statuses)},
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"componentstatuses"})
 
@@ -455,16 +494,16 @@ func TestGetListComponentStatus(t *testing.T) {
 func TestGetMultipleTypeObjects(t *testing.T) {
 	pods, svc, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
 			case "/namespaces/test/pods":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, pods)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)}, nil
 			case "/namespaces/test/services":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, svc)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, svc)}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -473,8 +512,9 @@ func TestGetMultipleTypeObjects(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"pods,services"})
 
@@ -494,16 +534,16 @@ func TestGetMultipleTypeObjects(t *testing.T) {
 func TestGetMultipleTypeObjectsAsList(t *testing.T) {
 	pods, svc, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
 			case "/namespaces/test/pods":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, pods)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)}, nil
 			case "/namespaces/test/services":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, svc)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, svc)}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -513,8 +553,9 @@ func TestGetMultipleTypeObjectsAsList(t *testing.T) {
 	tf.Namespace = "test"
 	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Flags().Set("output", "json")
@@ -554,19 +595,19 @@ func TestGetMultipleTypeObjectsAsList(t *testing.T) {
 func TestGetMultipleTypeObjectsWithSelector(t *testing.T) {
 	pods, svc, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Query().Get(unversioned.LabelSelectorQueryParam(testapi.Default.GroupVersion().String())) != "a=b" {
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 			}
 			switch req.URL.Path {
 			case "/namespaces/test/pods":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, pods)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)}, nil
 			case "/namespaces/test/services":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, svc)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, svc)}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -575,8 +616,9 @@ func TestGetMultipleTypeObjectsWithSelector(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Flags().Set("selector", "a=b")
@@ -606,16 +648,16 @@ func TestGetMultipleTypeObjectsWithDirectReference(t *testing.T) {
 		},
 	}
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
 			case "/nodes/foo":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, node)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, node)}, nil
 			case "/namespaces/test/services/bar":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, &svc.Items[0])}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &svc.Items[0])}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -624,8 +666,9 @@ func TestGetMultipleTypeObjectsWithDirectReference(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Run(cmd, []string{"services/bar", "node/foo"})
@@ -643,16 +686,17 @@ func TestGetMultipleTypeObjectsWithDirectReference(t *testing.T) {
 func TestGetByNameForcesFlag(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
-		Resp:  &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])},
+		NegotiatedSerializer: ns,
+		Resp:                 &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])},
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 	cmd.Run(cmd, []string{"pods", "foo"})
 
@@ -666,6 +710,14 @@ func watchTestData() ([]api.Pod, []watch.Event) {
 	pods := []api.Pod{
 		{
 			ObjectMeta: api.ObjectMeta{
+				Name:            "bar",
+				Namespace:       "test",
+				ResourceVersion: "9",
+			},
+			Spec: apitesting.DeepEqualSafePodSpec(),
+		},
+		{
+			ObjectMeta: api.ObjectMeta{
 				Name:            "foo",
 				Namespace:       "test",
 				ResourceVersion: "10",
@@ -674,6 +726,30 @@ func watchTestData() ([]api.Pod, []watch.Event) {
 		},
 	}
 	events := []watch.Event{
+		// current state events
+		{
+			Type: watch.Added,
+			Object: &api.Pod{
+				ObjectMeta: api.ObjectMeta{
+					Name:            "bar",
+					Namespace:       "test",
+					ResourceVersion: "9",
+				},
+				Spec: apitesting.DeepEqualSafePodSpec(),
+			},
+		},
+		{
+			Type: watch.Added,
+			Object: &api.Pod{
+				ObjectMeta: api.ObjectMeta{
+					Name:            "foo",
+					Namespace:       "test",
+					ResourceVersion: "10",
+				},
+				Spec: apitesting.DeepEqualSafePodSpec(),
+			},
+		},
+		// resource events
 		{
 			Type: watch.Modified,
 			Object: &api.Pod{
@@ -703,19 +779,25 @@ func watchTestData() ([]api.Pod, []watch.Event) {
 func TestWatchSelector(t *testing.T) {
 	pods, events := watchTestData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
+	podList := &api.PodList{
+		Items: pods,
+		ListMeta: unversioned.ListMeta{
+			ResourceVersion: "10",
+		},
+	}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			if req.URL.Query().Get(unversioned.LabelSelectorQueryParam(testapi.Default.GroupVersion().String())) != "a=b" {
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 			}
 			switch req.URL.Path {
 			case "/namespaces/test/pods":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, &api.PodList{Items: pods})}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, podList)}, nil
 			case "/watch/namespaces/test/pods":
-				return &http.Response{StatusCode: 200, Body: watchBody(codec, events)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: watchBody(codec, events[2:])}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -724,18 +806,19 @@ func TestWatchSelector(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Flags().Set("watch", "true")
 	cmd.Flags().Set("selector", "a=b")
 	cmd.Run(cmd, []string{"pods"})
 
-	expected := []runtime.Object{&api.PodList{Items: pods}, events[0].Object, events[1].Object}
+	expected := []runtime.Object{podList, events[2].Object, events[3].Object}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
-		t.Errorf("unexpected object:\nExpected: %#v\n\nGot: %#v\n\n", expected[0], actual[0])
+		t.Errorf("unexpected object:\nExpected: %#v\n\nGot: %#v\n\n", expected, actual)
 	}
 	if len(buf.String()) == 0 {
 		t.Errorf("unexpected empty output")
@@ -745,16 +828,16 @@ func TestWatchSelector(t *testing.T) {
 func TestWatchResource(t *testing.T) {
 	pods, events := watchTestData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
 			case "/namespaces/test/pods/foo":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, &pods[0])}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods[1])}, nil
 			case "/watch/namespaces/test/pods/foo":
-				return &http.Response{StatusCode: 200, Body: watchBody(codec, events)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: watchBody(codec, events[1:])}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -763,14 +846,15 @@ func TestWatchResource(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Flags().Set("watch", "true")
 	cmd.Run(cmd, []string{"pods", "foo"})
 
-	expected := []runtime.Object{&pods[0], events[0].Object, events[1].Object}
+	expected := []runtime.Object{&pods[1], events[2].Object, events[3].Object}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
 		t.Errorf("unexpected object:\nExpected: %#v\n\nGot: %#v\n\n", expected, actual)
@@ -783,16 +867,16 @@ func TestWatchResource(t *testing.T) {
 func TestWatchResourceIdentifiedByFile(t *testing.T) {
 	pods, events := watchTestData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
-			case "/namespaces/test/pods/cassandra":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, &pods[0])}, nil
-			case "/watch/namespaces/test/pods/cassandra":
-				return &http.Response{StatusCode: 200, Body: watchBody(codec, events)}, nil
+			case "/namespaces/test/replicationcontrollers/cassandra":
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods[1])}, nil
+			case "/watch/namespaces/test/replicationcontrollers/cassandra":
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: watchBody(codec, events[1:])}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -801,14 +885,16 @@ func TestWatchResourceIdentifiedByFile(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
-	cmd := NewCmdGet(f, buf)
+	errBuf := bytes.NewBuffer([]byte{})
+
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Flags().Set("watch", "true")
-	cmd.Flags().Set("filename", "../../../examples/cassandra/cassandra.yaml")
+	cmd.Flags().Set("filename", "../../../examples/storage/cassandra/cassandra-controller.yaml")
 	cmd.Run(cmd, []string{})
 
-	expected := []runtime.Object{&pods[0], events[0].Object, events[1].Object}
+	expected := []runtime.Object{&pods[1], events[2].Object, events[3].Object}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
 		t.Errorf("expected object: %#v unexpected object: %#v", expected, actual)
@@ -822,16 +908,16 @@ func TestWatchResourceIdentifiedByFile(t *testing.T) {
 func TestWatchOnlyResource(t *testing.T) {
 	pods, events := watchTestData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
 			case "/namespaces/test/pods/foo":
-				return &http.Response{StatusCode: 200, Body: objBody(codec, &pods[0])}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods[1])}, nil
 			case "/watch/namespaces/test/pods/foo":
-				return &http.Response{StatusCode: 200, Body: watchBody(codec, events)}, nil
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: watchBody(codec, events[1:])}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -840,14 +926,60 @@ func TestWatchOnlyResource(t *testing.T) {
 	}
 	tf.Namespace = "test"
 	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
 
-	cmd := NewCmdGet(f, buf)
+	cmd := NewCmdGet(f, buf, errBuf)
 	cmd.SetOutput(buf)
 
 	cmd.Flags().Set("watch-only", "true")
 	cmd.Run(cmd, []string{"pods", "foo"})
 
-	expected := []runtime.Object{events[0].Object, events[1].Object}
+	expected := []runtime.Object{events[2].Object, events[3].Object}
+	actual := tf.Printer.(*testPrinter).Objects
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("unexpected object: %#v", actual)
+	}
+	if len(buf.String()) == 0 {
+		t.Errorf("unexpected empty output")
+	}
+}
+
+func TestWatchOnlyList(t *testing.T) {
+	pods, events := watchTestData()
+
+	f, tf, codec, ns := NewAPIFactory()
+	tf.Printer = &testPrinter{}
+	podList := &api.PodList{
+		Items: pods,
+		ListMeta: unversioned.ListMeta{
+			ResourceVersion: "10",
+		},
+	}
+	tf.Client = &fake.RESTClient{
+		NegotiatedSerializer: ns,
+		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/namespaces/test/pods":
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, podList)}, nil
+			case "/watch/namespaces/test/pods":
+				return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: watchBody(codec, events[2:])}, nil
+			default:
+				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
+				return nil, nil
+			}
+		}),
+	}
+	tf.Namespace = "test"
+	buf := bytes.NewBuffer([]byte{})
+	errBuf := bytes.NewBuffer([]byte{})
+
+	cmd := NewCmdGet(f, buf, errBuf)
+	cmd.SetOutput(buf)
+
+	cmd.Flags().Set("watch-only", "true")
+	cmd.Run(cmd, []string{"pods"})
+
+	expected := []runtime.Object{events[2].Object, events[3].Object}
 	actual := tf.Printer.(*testPrinter).Objects
 	if !reflect.DeepEqual(expected, actual) {
 		t.Errorf("unexpected object: %#v", actual)
@@ -859,9 +991,9 @@ func TestWatchOnlyResource(t *testing.T) {
 
 func watchBody(codec runtime.Codec, events []watch.Event) io.ReadCloser {
 	buf := bytes.NewBuffer([]byte{})
-	enc := json.NewEncoder(buf, codec)
+	enc := versioned.NewEncoder(streaming.NewEncoder(buf, codec), codec)
 	for i := range events {
 		enc.Encode(&events[i])
 	}
-	return ioutil.NopCloser(buf)
+	return json.Framer.NewFrameReader(ioutil.NopCloser(buf))
 }

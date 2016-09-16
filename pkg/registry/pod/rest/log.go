@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/api/validation"
 	"k8s.io/kubernetes/pkg/kubelet/client"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	genericrest "k8s.io/kubernetes/pkg/registry/generic/rest"
 	"k8s.io/kubernetes/pkg/registry/pod"
 	"k8s.io/kubernetes/pkg/runtime"
@@ -33,7 +33,7 @@ import (
 // LogREST implements the log endpoint for a Pod
 type LogREST struct {
 	KubeletConn client.ConnectionInfoGetter
-	Store       *etcdgeneric.Etcd
+	Store       *registry.Store
 }
 
 // LogREST implements GetterWithOptions
@@ -43,6 +43,16 @@ var _ = rest.GetterWithOptions(&LogREST{})
 func (r *LogREST) New() runtime.Object {
 	// TODO - return a resource that represents a log
 	return &api.Pod{}
+}
+
+// LogREST implements StorageMetadata
+func (r *LogREST) ProducesMIMETypes(verb string) []string {
+	// Since the default list does not include "plain/text", we need to
+	// explicitly override ProducesMIMETypes, so that it gets added to
+	// the "produces" section for pods/{name}/log
+	return []string{
+		"text/plain",
+	}
 }
 
 // Get retrieves a runtime.Object that will stream the contents of the pod log

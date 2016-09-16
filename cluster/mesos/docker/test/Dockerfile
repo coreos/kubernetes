@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.4.3
+FROM golang:1.6.0
 MAINTAINER Mesosphere <support@mesosphere.io>
 
 # docker.io is suppossed to be in backports, but it's not there yet.

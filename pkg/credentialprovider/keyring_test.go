@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -460,6 +460,11 @@ type testProvider struct {
 // Enabled implements dockerConfigProvider
 func (d *testProvider) Enabled() bool {
 	return true
+}
+
+// LazyProvide implements dockerConfigProvider. Should never be called.
+func (d *testProvider) LazyProvide() *DockerConfigEntry {
+	return nil
 }
 
 // Provide implements dockerConfigProvider

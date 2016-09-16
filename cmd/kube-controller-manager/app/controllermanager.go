@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ import (
 	"k8s.io/kubernetes/cmd/kube-controller-manager/app/options"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/apis/batch"
 	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/client/leaderelection"
 	"k8s.io/kubernetes/pkg/client/record"
@@ -45,26 +46,34 @@ import (
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 	"k8s.io/kubernetes/pkg/controller"
+	certcontroller "k8s.io/kubernetes/pkg/controller/certificates"
 	"k8s.io/kubernetes/pkg/controller/daemon"
 	"k8s.io/kubernetes/pkg/controller/deployment"
+	"k8s.io/kubernetes/pkg/controller/disruption"
 	endpointcontroller "k8s.io/kubernetes/pkg/controller/endpoint"
-	"k8s.io/kubernetes/pkg/controller/gc"
+	"k8s.io/kubernetes/pkg/controller/garbagecollector"
+	"k8s.io/kubernetes/pkg/controller/garbagecollector/metaonly"
+	"k8s.io/kubernetes/pkg/controller/informers"
 	"k8s.io/kubernetes/pkg/controller/job"
 	namespacecontroller "k8s.io/kubernetes/pkg/controller/namespace"
 	nodecontroller "k8s.io/kubernetes/pkg/controller/node"
-	persistentvolumecontroller "k8s.io/kubernetes/pkg/controller/persistentvolume"
+	petset "k8s.io/kubernetes/pkg/controller/petset"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler"
 	"k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
+	"k8s.io/kubernetes/pkg/controller/podgc"
 	replicaset "k8s.io/kubernetes/pkg/controller/replicaset"
 	replicationcontroller "k8s.io/kubernetes/pkg/controller/replication"
 	resourcequotacontroller "k8s.io/kubernetes/pkg/controller/resourcequota"
 	routecontroller "k8s.io/kubernetes/pkg/controller/route"
+	"k8s.io/kubernetes/pkg/controller/scheduledjob"
 	servicecontroller "k8s.io/kubernetes/pkg/controller/service"
 	serviceaccountcontroller "k8s.io/kubernetes/pkg/controller/serviceaccount"
+	"k8s.io/kubernetes/pkg/controller/volume/attachdetach"
+	persistentvolumecontroller "k8s.io/kubernetes/pkg/controller/volume/persistentvolume"
 	"k8s.io/kubernetes/pkg/healthz"
 	quotainstall "k8s.io/kubernetes/pkg/quota/install"
+	"k8s.io/kubernetes/pkg/runtime/serializer"
 	"k8s.io/kubernetes/pkg/serviceaccount"
-	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/configz"
 	"k8s.io/kubernetes/pkg/util/crypto"
 	"k8s.io/kubernetes/pkg/util/wait"
@@ -73,6 +82,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+)
+
+const (
+	// Jitter used when starting controller managers
+	ControllerStartJitter = 1.0
 )
 
 // NewControllerManagerCommand creates a *cobra.Command object with default parameters
@@ -115,9 +129,10 @@ func Run(s *options.CMServer) error {
 		return err
 	}
 
+	kubeconfig.ContentConfig.ContentType = s.ContentType
 	// Override kubeconfig qps/burst settings from flags
 	kubeconfig.QPS = s.KubeAPIQPS
-	kubeconfig.Burst = s.KubeAPIBurst
+	kubeconfig.Burst = int(s.KubeAPIBurst)
 
 	kubeClient, err := client.New(kubeconfig)
 	if err != nil {
@@ -132,17 +147,23 @@ func Run(s *options.CMServer) error {
 			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 			mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		}
+		configz.InstallHandler(mux)
 		mux.Handle("/metrics", prometheus.Handler())
 
 		server := &http.Server{
-			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(s.Port)),
+			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(int(s.Port))),
 			Handler: mux,
 		}
 		glog.Fatal(server.ListenAndServe())
 	}()
 
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartLogging(glog.Infof)
+	eventBroadcaster.StartRecordingToSink(kubeClient.Events(""))
+	recorder := eventBroadcaster.NewRecorder(api.EventSource{Component: "controller-manager"})
+
 	run := func(stop <-chan struct{}) {
-		err := StartControllers(s, kubeClient, kubeconfig, stop)
+		err := StartControllers(s, kubeClient, kubeconfig, stop, recorder)
 		glog.Fatalf("error running controllers: %v", err)
 		panic("unreachable")
 	}
@@ -151,11 +172,6 @@ func Run(s *options.CMServer) error {
 		run(nil)
 		panic("unreachable")
 	}
-
-	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartLogging(glog.Infof)
-	eventBroadcaster.StartRecordingToSink(kubeClient.Events(""))
-	recorder := eventBroadcaster.NewRecorder(api.EventSource{Component: "controller-manager"})
 
 	id, err := os.Hostname()
 	if err != nil {
@@ -183,20 +199,27 @@ func Run(s *options.CMServer) error {
 	panic("unreachable")
 }
 
-func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig *restclient.Config, stop <-chan struct{}) error {
-	go endpointcontroller.NewEndpointController(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "endpoint-controller")), ResyncPeriod(s)).
-		Run(s.ConcurrentEndpointSyncs, wait.NeverStop)
+func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig *restclient.Config, stop <-chan struct{}, recorder record.EventRecorder) error {
+	sharedInformers := informers.NewSharedInformerFactory(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "shared-informers")), ResyncPeriod(s)())
+
+	go endpointcontroller.NewEndpointController(sharedInformers.Pods().Informer(), clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "endpoint-controller"))).
+		Run(int(s.ConcurrentEndpointSyncs), wait.NeverStop)
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 
 	go replicationcontroller.NewReplicationManager(
+		sharedInformers.Pods().Informer(),
 		clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "replication-controller")),
 		ResyncPeriod(s),
 		replicationcontroller.BurstReplicas,
-		s.LookupCacheSizeForRC,
-	).Run(s.ConcurrentRCSyncs, wait.NeverStop)
+		int(s.LookupCacheSizeForRC),
+		s.EnableGarbageCollector,
+	).Run(int(s.ConcurrentRCSyncs), wait.NeverStop)
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 
 	if s.TerminatedPodGCThreshold > 0 {
-		go gc.New(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "garbage-collector")), ResyncPeriod(s), s.TerminatedPodGCThreshold).
+		go podgc.New(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "pod-garbage-collector")), ResyncPeriod(s), int(s.TerminatedPodGCThreshold)).
 			Run(wait.NeverStop)
+		time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 	}
 
 	cloud, err := cloudprovider.InitCloudProvider(s.CloudProvider, s.CloudConfigFile)
@@ -204,30 +227,44 @@ func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig
 		glog.Fatalf("Cloud provider could not be initialized: %v", err)
 	}
 
-	// this cidr has been validated already
-	_, clusterCIDR, _ := net.ParseCIDR(s.ClusterCIDR)
-	nodeController := nodecontroller.NewNodeController(cloud, clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "node-controller")),
-		s.PodEvictionTimeout.Duration, util.NewTokenBucketRateLimiter(s.DeletingPodsQps, s.DeletingPodsBurst),
-		util.NewTokenBucketRateLimiter(s.DeletingPodsQps, s.DeletingPodsBurst),
-		s.NodeMonitorGracePeriod.Duration, s.NodeStartupGracePeriod.Duration, s.NodeMonitorPeriod.Duration, clusterCIDR, s.AllocateNodeCIDRs)
-	nodeController.Run(s.NodeSyncPeriod.Duration)
-
-	serviceController := servicecontroller.New(cloud, clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "service-controller")), s.ClusterName)
-	if err := serviceController.Run(s.ServiceSyncPeriod.Duration, s.NodeSyncPeriod.Duration); err != nil {
-		glog.Errorf("Failed to start service controller: %v", err)
+	_, clusterCIDR, err := net.ParseCIDR(s.ClusterCIDR)
+	if err != nil {
+		glog.Warningf("Unsuccessful parsing of cluster CIDR %v: %v", s.ClusterCIDR, err)
 	}
+	_, serviceCIDR, err := net.ParseCIDR(s.ServiceCIDR)
+	if err != nil {
+		glog.Warningf("Unsuccessful parsing of service CIDR %v: %v", s.ServiceCIDR, err)
+	}
+	nodeController, err := nodecontroller.NewNodeController(sharedInformers.Pods().Informer(), cloud, clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "node-controller")),
+		s.PodEvictionTimeout.Duration, s.NodeEvictionRate, s.SecondaryNodeEvictionRate, s.LargeClusterSizeThreshold, s.UnhealthyZoneThreshold, s.NodeMonitorGracePeriod.Duration,
+		s.NodeStartupGracePeriod.Duration, s.NodeMonitorPeriod.Duration, clusterCIDR, serviceCIDR,
+		int(s.NodeCIDRMaskSize), s.AllocateNodeCIDRs)
+	if err != nil {
+		glog.Fatalf("Failed to initialize nodecontroller: %v", err)
+	}
+	nodeController.Run()
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 
-	if s.AllocateNodeCIDRs {
+	serviceController, err := servicecontroller.New(cloud, clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "service-controller")), s.ClusterName)
+	if err != nil {
+		glog.Errorf("Failed to start service controller: %v", err)
+	} else {
+		serviceController.Run(int(s.ConcurrentServiceSyncs))
+	}
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+
+	if s.AllocateNodeCIDRs && s.ConfigureCloudRoutes {
 		if cloud == nil {
-			glog.Warning("allocate-node-cidrs is set, but no cloud provider specified. Will not manage routes.")
+			glog.Warning("configure-cloud-routes is set, but no cloud provider specified. Will not configure cloud provider routes.")
 		} else if routes, ok := cloud.Routes(); !ok {
-			glog.Warning("allocate-node-cidrs is set, but cloud provider does not support routes. Will not manage routes.")
+			glog.Warning("configure-cloud-routes is set, but cloud provider does not support routes. Will not configure cloud provider routes.")
 		} else {
 			routeController := routecontroller.New(routes, clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "route-controller")), s.ClusterName, clusterCIDR)
-			routeController.Run(s.NodeSyncPeriod.Duration)
+			routeController.Run(s.RouteReconciliationPeriod.Duration)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 	} else {
-		glog.Infof("allocate-node-cidrs set to %v, node controller not creating routes", s.AllocateNodeCIDRs)
+		glog.Infof("Will not configure cloud provider routes for allocate-node-cidrs: %v, configure-cloud-routes: %v.", s.AllocateNodeCIDRs, s.ConfigureCloudRoutes)
 	}
 
 	resourceQuotaControllerClient := clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "resourcequota-controller"))
@@ -244,11 +281,12 @@ func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig
 		KubeClient:                resourceQuotaControllerClient,
 		ResyncPeriod:              controller.StaticResyncPeriodFunc(s.ResourceQuotaSyncPeriod.Duration),
 		Registry:                  resourceQuotaRegistry,
-		ControllerFactory:         resourcequotacontroller.NewReplenishmentControllerFactory(resourceQuotaControllerClient),
+		ControllerFactory:         resourcequotacontroller.NewReplenishmentControllerFactory(sharedInformers.Pods().Informer(), resourceQuotaControllerClient),
 		ReplenishmentResyncPeriod: ResyncPeriod(s),
 		GroupKindsToReplenish:     groupKindsToReplenish,
 	}
-	go resourcequotacontroller.NewResourceQuotaController(resourceQuotaControllerOptions).Run(s.ConcurrentResourceQuotaSyncs, wait.NeverStop)
+	go resourcequotacontroller.NewResourceQuotaController(resourceQuotaControllerOptions).Run(int(s.ConcurrentResourceQuotaSyncs), wait.NeverStop)
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 
 	// If apiserver is not running we should wait for some time and fail only then. This is particularly
 	// important when we start apiserver and controller manager at the same time.
@@ -273,12 +311,13 @@ func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig
 	// Find the list of namespaced resources via discovery that the namespace controller must manage
 	namespaceKubeClient := clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "namespace-controller"))
 	namespaceClientPool := dynamic.NewClientPool(restclient.AddUserAgent(kubeconfig, "namespace-controller"), dynamic.LegacyAPIPathResolverFunc)
-	groupVersionResources, err := namespacecontroller.ServerPreferredNamespacedGroupVersionResources(namespaceKubeClient.Discovery())
+	groupVersionResources, err := namespaceKubeClient.Discovery().ServerPreferredNamespacedResources()
 	if err != nil {
 		glog.Fatalf("Failed to get supported resources from server: %v", err)
 	}
 	namespaceController := namespacecontroller.NewNamespaceController(namespaceKubeClient, namespaceClientPool, groupVersionResources, s.NamespaceSyncPeriod.Duration, api.FinalizerKubernetes)
-	go namespaceController.Run(s.ConcurrentNamespaceSyncs, wait.NeverStop)
+	go namespaceController.Run(int(s.ConcurrentNamespaceSyncs), wait.NeverStop)
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 
 	groupVersion := "extensions/v1beta1"
 	resources, found := resourceMap[groupVersion]
@@ -297,60 +336,143 @@ func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig
 			)
 			go podautoscaler.NewHorizontalController(hpaClient.Core(), hpaClient.Extensions(), hpaClient, metricsClient, s.HorizontalPodAutoscalerSyncPeriod.Duration).
 				Run(wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 
 		if containsResource(resources, "daemonsets") {
 			glog.Infof("Starting daemon set controller")
-			go daemon.NewDaemonSetsController(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "daemon-set-controller")), ResyncPeriod(s), s.LookupCacheSizeForDaemonSet).
-				Run(s.ConcurrentDaemonSetSyncs, wait.NeverStop)
+			go daemon.NewDaemonSetsController(sharedInformers.DaemonSets(), sharedInformers.Pods(), sharedInformers.Nodes(), clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "daemon-set-controller")), int(s.LookupCacheSizeForDaemonSet)).
+				Run(int(s.ConcurrentDaemonSetSyncs), wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 
 		if containsResource(resources, "jobs") {
 			glog.Infof("Starting job controller")
-			go job.NewJobController(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "job-controller")), ResyncPeriod(s)).
-				Run(s.ConcurrentJobSyncs, wait.NeverStop)
+			go job.NewJobController(sharedInformers.Pods().Informer(), clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "job-controller"))).
+				Run(int(s.ConcurrentJobSyncs), wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 
 		if containsResource(resources, "deployments") {
 			glog.Infof("Starting deployment controller")
 			go deployment.NewDeploymentController(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "deployment-controller")), ResyncPeriod(s)).
-				Run(s.ConcurrentDeploymentSyncs, wait.NeverStop)
+				Run(int(s.ConcurrentDeploymentSyncs), wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 
 		if containsResource(resources, "replicasets") {
 			glog.Infof("Starting ReplicaSet controller")
-			go replicaset.NewReplicaSetController(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "replicaset-controller")), ResyncPeriod(s), replicaset.BurstReplicas, s.LookupCacheSizeForRS).
-				Run(s.ConcurrentRSSyncs, wait.NeverStop)
+			go replicaset.NewReplicaSetController(sharedInformers.Pods().Informer(), clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "replicaset-controller")), ResyncPeriod(s), replicaset.BurstReplicas, int(s.LookupCacheSizeForRS), s.EnableGarbageCollector).
+				Run(int(s.ConcurrentRSSyncs), wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 	}
 
-	volumePlugins := ProbeRecyclableVolumePlugins(s.VolumeConfiguration)
-	provisioner, err := NewVolumeProvisioner(cloud, s.VolumeConfiguration)
-	if err != nil {
-		glog.Fatal("A Provisioner could not be created, but one was expected. Provisioning will not work. This functionality is considered an early Alpha version.")
+	groupVersion = "policy/v1alpha1"
+	resources, found = resourceMap[groupVersion]
+	glog.Infof("Attempting to start disruption controller, full resource map %+v", resourceMap)
+	if containsVersion(versions, groupVersion) && found {
+		glog.Infof("Starting %s apis", groupVersion)
+		if containsResource(resources, "poddisruptionbudgets") {
+			glog.Infof("Starting disruption controller")
+			go disruption.NewDisruptionController(sharedInformers.Pods().Informer(), kubeClient).Run(wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+		}
 	}
 
-	pvclaimBinder := persistentvolumecontroller.NewPersistentVolumeClaimBinder(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "persistent-volume-binder")), s.PVClaimBinderSyncPeriod.Duration)
-	pvclaimBinder.Run()
+	groupVersion = "apps/v1alpha1"
+	resources, found = resourceMap[groupVersion]
+	glog.Infof("Attempting to start petset, full resource map %+v", resourceMap)
+	if containsVersion(versions, groupVersion) && found {
+		glog.Infof("Starting %s apis", groupVersion)
+		if containsResource(resources, "petsets") {
+			glog.Infof("Starting PetSet controller")
+			resyncPeriod := ResyncPeriod(s)()
+			go petset.NewPetSetController(
+				sharedInformers.Pods().Informer(),
+				// TODO: Switch to using clientset
+				kubeClient,
+				resyncPeriod,
+			).Run(1, wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+		}
+	}
 
-	pvRecycler, err := persistentvolumecontroller.NewPersistentVolumeRecycler(
-		clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "persistent-volume-recycler")),
+	groupVersion = "batch/v2alpha1"
+	resources, found = resourceMap[groupVersion]
+	if containsVersion(versions, groupVersion) && found {
+		glog.Infof("Starting %s apis", groupVersion)
+		if containsResource(resources, "scheduledjobs") {
+			glog.Infof("Starting scheduledjob controller")
+			// // TODO: this is a temp fix for allowing kubeClient list v2alpha1 sj, should switch to using clientset
+			kubeconfig.ContentConfig.GroupVersion = &unversioned.GroupVersion{Group: batch.GroupName, Version: "v2alpha1"}
+			go scheduledjob.NewScheduledJobController(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "scheduledjob-controller"))).
+				Run(wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+		}
+	} else {
+		glog.Infof("Not starting %s apis", groupVersion)
+	}
+
+	alphaProvisioner, err := NewAlphaVolumeProvisioner(cloud, s.VolumeConfiguration)
+	if err != nil {
+		glog.Fatalf("An backward-compatible provisioner could not be created: %v, but one was expected. Provisioning will not work. This functionality is considered an early Alpha version.", err)
+	}
+	volumeController := persistentvolumecontroller.NewPersistentVolumeController(
+		clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "persistent-volume-binder")),
 		s.PVClaimBinderSyncPeriod.Duration,
-		s.VolumeConfiguration.PersistentVolumeRecyclerConfiguration.MaximumRetry,
-		ProbeRecyclableVolumePlugins(s.VolumeConfiguration),
+		alphaProvisioner,
+		ProbeControllerVolumePlugins(cloud, s.VolumeConfiguration),
 		cloud,
+		s.ClusterName,
+		nil, // volumeSource
+		nil, // claimSource
+		nil, // classSource
+		nil, // eventRecorder
+		s.VolumeConfiguration.EnableDynamicProvisioning,
 	)
-	if err != nil {
-		glog.Fatalf("Failed to start persistent volume recycler: %+v", err)
-	}
-	pvRecycler.Run()
+	volumeController.Run(wait.NeverStop)
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 
-	if provisioner != nil {
-		pvController, err := persistentvolumecontroller.NewPersistentVolumeProvisionerController(persistentvolumecontroller.NewControllerClient(clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "persistent-volume-provisioner"))), s.PVClaimBinderSyncPeriod.Duration, s.ClusterName, volumePlugins, provisioner, cloud)
-		if err != nil {
-			glog.Fatalf("Failed to start persistent volume provisioner controller: %+v", err)
+	attachDetachController, attachDetachControllerErr :=
+		attachdetach.NewAttachDetachController(
+			clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "attachdetach-controller")),
+			sharedInformers.Pods().Informer(),
+			sharedInformers.Nodes().Informer(),
+			sharedInformers.PersistentVolumeClaims().Informer(),
+			sharedInformers.PersistentVolumes().Informer(),
+			cloud,
+			ProbeAttachableVolumePlugins(s.VolumeConfiguration),
+			recorder)
+	if attachDetachControllerErr != nil {
+		glog.Fatalf("Failed to start attach/detach controller: %v", attachDetachControllerErr)
+	}
+	go attachDetachController.Run(wait.NeverStop)
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+
+	groupVersion = "certificates.k8s.io/v1alpha1"
+	resources, found = resourceMap[groupVersion]
+	glog.Infof("Attempting to start certificates, full resource map %+v", resourceMap)
+	if containsVersion(versions, groupVersion) && found {
+		glog.Infof("Starting %s apis", groupVersion)
+		if containsResource(resources, "certificatesigningrequests") {
+			glog.Infof("Starting certificate request controller")
+			resyncPeriod := ResyncPeriod(s)()
+			certController, err := certcontroller.NewCertificateController(
+				clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "certificate-controller")),
+				resyncPeriod,
+				s.ClusterSigningCertFile,
+				s.ClusterSigningKeyFile,
+				s.ApproveAllKubeletCSRsForGroup,
+			)
+			if err != nil {
+				glog.Errorf("Failed to start certificate controller: %v", err)
+			} else {
+				go certController.Run(1, wait.NeverStop)
+			}
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
-		pvController.Run()
 	}
 
 	var rootCA []byte
@@ -372,13 +494,14 @@ func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig
 		if err != nil {
 			glog.Errorf("Error reading key for service account token controller: %v", err)
 		} else {
-			serviceaccountcontroller.NewTokensController(
+			go serviceaccountcontroller.NewTokensController(
 				clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "tokens-controller")),
 				serviceaccountcontroller.TokensControllerOptions{
 					TokenGenerator: serviceaccount.JWTTokenGenerator(privateKey),
 					RootCA:         rootCA,
 				},
-			).Run()
+			).Run(int(s.ConcurrentSATokenSyncs), wait.NeverStop)
+			time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
 		}
 	}
 
@@ -386,6 +509,29 @@ func StartControllers(s *options.CMServer, kubeClient *client.Client, kubeconfig
 		clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "service-account-controller")),
 		serviceaccountcontroller.DefaultServiceAccountsControllerOptions(),
 	).Run()
+	time.Sleep(wait.Jitter(s.ControllerStartInterval.Duration, ControllerStartJitter))
+
+	if s.EnableGarbageCollector {
+		gcClientset := clientset.NewForConfigOrDie(restclient.AddUserAgent(kubeconfig, "generic-garbage-collector"))
+		groupVersionResources, err := gcClientset.Discovery().ServerPreferredResources()
+		if err != nil {
+			glog.Fatalf("Failed to get supported resources from server: %v", err)
+		}
+		config := restclient.AddUserAgent(kubeconfig, "generic-garbage-collector")
+		config.ContentConfig.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: metaonly.NewMetadataCodecFactory()}
+		metaOnlyClientPool := dynamic.NewClientPool(config, dynamic.LegacyAPIPathResolverFunc)
+		config.ContentConfig.NegotiatedSerializer = nil
+		clientPool := dynamic.NewClientPool(config, dynamic.LegacyAPIPathResolverFunc)
+		garbageCollector, err := garbagecollector.NewGarbageCollector(metaOnlyClientPool, clientPool, groupVersionResources)
+		if err != nil {
+			glog.Errorf("Failed to start the generic garbage collector: %v", err)
+		} else {
+			workers := int(s.ConcurrentGCSyncs)
+			go garbageCollector.Run(workers, wait.NeverStop)
+		}
+	}
+
+	sharedInformers.Start(stop)
 
 	select {}
 }

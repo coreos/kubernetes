@@ -2,21 +2,26 @@
 
 <!-- BEGIN STRIP_FOR_RELEASE -->
 
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
 
 <h2>PLEASE NOTE: This document applies to the HEAD of the source tree</h2>
 
 If you are using a released version of Kubernetes, you should
 refer to the docs that go with that version.
+
+<!-- TAG RELEASE_LINK, added by the munger automatically -->
+<strong>
+The latest release of this document can be found
+[here](http://releases.k8s.io/release-1.4/docs/design/federation-phase-1.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -71,7 +76,8 @@ unified view.
 
 Here are the functionality requirements derived from above use cases:
 
-+ Clients of the federation control plane API server can register and deregister clusters.
++ Clients of the federation control plane API server can register and deregister
+clusters.
 + Workloads should be spread to different clusters according to the
    workload distribution policy.
 + Pods are able to discover and connect to services hosted in other
@@ -90,7 +96,7 @@ Here are the functionality requirements derived from above use cases:
 It’s difficult to have a perfect design with one click that implements
 all the above requirements. Therefore we will go with an iterative
 approach to design and build the system. This document describes the
-phase one of the whole work.  In phase one we will cover only the
+phase one of the whole work. In phase one we will cover only the
 following objectives:
 
 + Define the basic building blocks and API objects of control plane
@@ -130,9 +136,9 @@ description of each module contained in above diagram.
 
 The API Server in the Ubernetes control plane works just like the API
 Server in K8S. It talks to a distributed key-value store to persist,
-retrieve and watch API objects.  This store is completely distinct
+retrieve and watch API objects. This store is completely distinct
 from the kubernetes key-value stores (etcd) in the underlying
-kubernetes clusters.  We still use `etcd` as the distributed
+kubernetes clusters. We still use `etcd` as the distributed
 storage so customers don’t need to learn and manage a different
 storage system, although it is envisaged that other storage systems
 (consol, zookeeper) will probably be developedand supported over
@@ -141,16 +147,16 @@ time.
 ## Ubernetes Scheduler
 
 The Ubernetes Scheduler schedules resources onto the underlying
-Kubernetes clusters.  For example it watches for unscheduled Ubernetes
+Kubernetes clusters. For example it watches for unscheduled Ubernetes
 replication controllers (those that have not yet been scheduled onto
 underlying Kubernetes clusters) and performs the global scheduling
-work.  For each unscheduled replication controller, it calls policy
+work. For each unscheduled replication controller, it calls policy
 engine to decide how to spit workloads among clusters. It creates a
 Kubernetes Replication Controller on one ore more underlying cluster,
 and post them back to `etcd` storage.
 
-One sublety worth noting here is that the scheduling decision is
-arrived at by combining the application-specific request from the user (which might
+One sublety worth noting here is that the scheduling decision is arrived at by
+combining the application-specific request from the user (which might
 include, for example, placement constraints), and the global policy specified
 by the federation administrator (for example, "prefer on-premise
 clusters over AWS clusters" or "spread load equally across clusters").
@@ -165,9 +171,9 @@ performs the following two kinds of work:
    corresponding API objects on the underlying K8S clusters.
 1. It periodically retrieves the available resources metrics from the
    underlying K8S cluster, and updates them as object status of the
-   `cluster` API object.  An alternative design might be to run a pod
+   `cluster` API object. An alternative design might be to run a pod
    in each underlying cluster that reports metrics for that cluster to
-   the Ubernetes control plane.  Which approach is better remains an
+   the Ubernetes control plane. Which approach is better remains an
    open topic of discussion.
 
 ## Ubernetes Service Controller
@@ -187,7 +193,7 @@ Cluster is a new first-class API object introduced in this design. For
 each registered K8S cluster there will be such an API resource in
 control plane. The way clients register or deregister a cluster is to
 send corresponding REST requests to following URL:
-`/api/{$version}/clusters`.  Because control plane is behaving like a
+`/api/{$version}/clusters`. Because control plane is behaving like a
 regular K8S client to the underlying clusters, the spec of a cluster
 object contains necessary properties like K8S cluster address and
 credentials.  The status of a cluster API object will contain
@@ -294,7 +300,7 @@ $version.clusterStatus
 **For simplicity we didn’t introduce a separate “cluster metrics” API
 object here**. The cluster resource metrics are stored in cluster
 status section, just like what we did to nodes in K8S. In phase one it
-only contains available CPU resources and memory resources.  The
+only contains available CPU resources and memory resources. The
 cluster controller will periodically poll the underlying cluster API
 Server to get cluster capability. In phase one it gets the metrics by
 simply aggregating metrics from all nodes. In future we will improve
@@ -314,8 +320,8 @@ Below is the state transition diagram.
 
 ## Replication Controller
 
-A global workload submitted to control plane is represented as an
-Ubernetes replication controller.   When a replication controller
+A global workload submitted to control plane is represented as a
+ replication controller in the Cluster Federation control plane. When a replication controller
 is submitted to control plane, clients need a way to express its
 requirements or preferences on clusters. Depending on different use
 cases it may be complex. For example:
@@ -327,7 +333,7 @@ cases it may be complex. For example:
    (use case: workload )
 + Seventy percent of this workload should be scheduled to cluster Foo,
     and thirty percent should be scheduled to cluster Bar (use case:
-    vendor lock-in avoidance).  In phase one, we only introduce a
+    vendor lock-in avoidance). In phase one, we only introduce a
     _clusterSelector_ field to filter acceptable clusters. In default
     case there is no such selector and it means any cluster is
     acceptable.
@@ -371,25 +377,26 @@ some implicit scheduling restrictions. For example it defines
 “nodeSelector” which can only be satisfied on some particular
 clusters. How to handle this will be addressed after phase one.
 
-## Ubernetes Services
+## Federated Services
 
-The Service API object exposed by Ubernetes is similar to service
+The Service API object exposed by the Cluster Federation is similar to service
 objects on Kubernetes. It defines the access to a group of pods. The
-Ubernetes service controller will create corresponding Kubernetes
-service objects on underlying clusters.  These are detailed in a
+federation service controller will create corresponding Kubernetes
+service objects on underlying clusters. These are detailed in a
 separate design document: [Federated Services](federated-services.md).
 
 ## Pod
 
 In phase one we only support scheduling replication controllers. Pod
 scheduling will be supported in later phase. This is primarily in
-order to keep the Ubernetes API compatible with the Kubernetes API.
+order to keep the Cluster Federation API compatible with the Kubernetes API.
 
 ## ACTIVITY FLOWS
 
 ## Scheduling
 
-The below diagram shows how workloads are scheduled on the Ubernetes control plane:
+The below diagram shows how workloads are scheduled on the Cluster Federation control\
+plane:
 
 1. A replication controller is created by the client.
 1. APIServer persists it into the storage.
@@ -412,21 +419,21 @@ distribution policies. The scheduling rule is basically:
 There is a potential race condition here. Say at time _T1_ the control
 plane learns there are _m_ available resources in a K8S cluster. As
 the cluster is working independently it still accepts workload
-requests from other K8S clients or even another Ubernetes control
-plane. The Ubernetes scheduling decision is based on this data of
+requests from other K8S clients or even another Cluster Federation control
+plane. The Cluster Federation scheduling decision is based on this data of
 available resources. However when the actual RC creation happens to
 the cluster at time _T2_, the cluster may don’t have enough resources
 at that time. We will address this problem in later phases with some
 proposed solutions like resource reservation mechanisms.
 
-![Ubernetes Scheduling](ubernetes-scheduling.png)
+![Federated Scheduling](ubernetes-scheduling.png)
 
 ## Service Discovery
 
 This part has been included in the section “Federated Service” of
 document
-“[Ubernetes Cross-cluster Load Balancing and Service Discovery Requirements and System Design](federated-services.md))”. Please
-refer to that document for details.
+“[Federated Cross-cluster Load Balancing and Service Discovery Requirements and System Design](federated-services.md))”.
+Please refer to that document for details.
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

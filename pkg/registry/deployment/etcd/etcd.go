@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,12 +25,10 @@ import (
 	"k8s.io/kubernetes/pkg/api/rest"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	extvalidation "k8s.io/kubernetes/pkg/apis/extensions/validation"
-	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/registry/cachesize"
 	"k8s.io/kubernetes/pkg/registry/deployment"
 	"k8s.io/kubernetes/pkg/registry/generic"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/storage"
 )
@@ -56,40 +54,46 @@ func NewStorage(opts generic.RESTOptions) DeploymentStorage {
 }
 
 type REST struct {
-	*etcdgeneric.Etcd
+	*registry.Store
 }
 
 // NewREST returns a RESTStorage object that will work against deployments.
 func NewREST(opts generic.RESTOptions) (*REST, *StatusREST, *RollbackREST) {
-	prefix := "/deployments"
+	prefix := "/" + opts.ResourcePrefix
 
 	newListFunc := func() runtime.Object { return &extensions.DeploymentList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage, cachesize.GetWatchCacheSizeByResource(cachesize.Deployments), &extensions.Deployment{}, prefix, deployment.Strategy, newListFunc)
+	storageInterface, dFunc := opts.Decorator(
+		opts.StorageConfig,
+		cachesize.GetWatchCacheSizeByResource(cachesize.Deployments),
+		&extensions.Deployment{},
+		prefix,
+		deployment.Strategy,
+		newListFunc,
+		storage.NoTriggerPublisher,
+	)
 
-	store := &etcdgeneric.Etcd{
+	store := &registry.Store{
 		NewFunc: func() runtime.Object { return &extensions.Deployment{} },
 		// NewListFunc returns an object capable of storing results of an etcd list.
 		NewListFunc: newListFunc,
 		// Produces a path that etcd understands, to the root of the resource
 		// by combining the namespace in the context with the given prefix.
 		KeyRootFunc: func(ctx api.Context) string {
-			return etcdgeneric.NamespaceKeyRootFunc(ctx, prefix)
+			return registry.NamespaceKeyRootFunc(ctx, prefix)
 		},
 		// Produces a path that etcd understands, to the resource by combining
 		// the namespace in the context with the given prefix.
 		KeyFunc: func(ctx api.Context, name string) (string, error) {
-			return etcdgeneric.NamespaceKeyFunc(ctx, prefix, name)
+			return registry.NamespaceKeyFunc(ctx, prefix, name)
 		},
 		// Retrieve the name field of a deployment.
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
 			return obj.(*extensions.Deployment).Name, nil
 		},
 		// Used to match objects based on labels/fields for list.
-		PredicateFunc: func(label labels.Selector, field fields.Selector) generic.Matcher {
-			return deployment.MatchDeployment(label, field)
-		},
+		PredicateFunc:           deployment.MatchDeployment,
 		QualifiedResource:       extensions.Resource("deployments"),
+		EnableGarbageCollection: opts.EnableGarbageCollection,
 		DeleteCollectionWorkers: opts.DeleteCollectionWorkers,
 
 		// Used to validate deployment creation.
@@ -97,8 +101,10 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST, *RollbackREST) {
 
 		// Used to validate deployment updates.
 		UpdateStrategy: deployment.Strategy,
+		DeleteStrategy: deployment.Strategy,
 
-		Storage: storageInterface,
+		Storage:     storageInterface,
+		DestroyFunc: dFunc,
 	}
 	statusStore := *store
 	statusStore.UpdateStrategy = deployment.StatusStrategy
@@ -107,21 +113,26 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST, *RollbackREST) {
 
 // StatusREST implements the REST endpoint for changing the status of a deployment
 type StatusREST struct {
-	store *etcdgeneric.Etcd
+	store *registry.Store
 }
 
 func (r *StatusREST) New() runtime.Object {
 	return &extensions.Deployment{}
 }
 
+// Get retrieves the object from the storage. It is required to support Patch.
+func (r *StatusREST) Get(ctx api.Context, name string) (runtime.Object, error) {
+	return r.store.Get(ctx, name)
+}
+
 // Update alters the status subset of an object.
-func (r *StatusREST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool, error) {
-	return r.store.Update(ctx, obj)
+func (r *StatusREST) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectInfo) (runtime.Object, bool, error) {
+	return r.store.Update(ctx, name, objInfo)
 }
 
 // RollbackREST implements the REST endpoint for initiating the rollback of a deployment
 type RollbackREST struct {
-	store *etcdgeneric.Etcd
+	store *registry.Store
 }
 
 // New creates a rollback
@@ -162,7 +173,7 @@ func (r *RollbackREST) setDeploymentRollback(ctx api.Context, deploymentID strin
 	if err != nil {
 		return nil, err
 	}
-	err = r.store.Storage.GuaranteedUpdate(ctx, dKey, &extensions.Deployment{}, false, storage.SimpleUpdate(func(obj runtime.Object) (runtime.Object, error) {
+	err = r.store.Storage.GuaranteedUpdate(ctx, dKey, &extensions.Deployment{}, false, nil, storage.SimpleUpdate(func(obj runtime.Object) (runtime.Object, error) {
 		d, ok := obj.(*extensions.Deployment)
 		if !ok {
 			return nil, fmt.Errorf("unexpected object: %#v", obj)
@@ -204,7 +215,21 @@ func (r *ScaleREST) Get(ctx api.Context, name string) (runtime.Object, error) {
 	return scale, nil
 }
 
-func (r *ScaleREST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool, error) {
+func (r *ScaleREST) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectInfo) (runtime.Object, bool, error) {
+	deployment, err := r.registry.GetDeployment(ctx, name)
+	if err != nil {
+		return nil, false, errors.NewNotFound(extensions.Resource("deployments/scale"), name)
+	}
+
+	oldScale, err := scaleFromDeployment(deployment)
+	if err != nil {
+		return nil, false, err
+	}
+
+	obj, err := objInfo.UpdatedObject(ctx, oldScale)
+	if err != nil {
+		return nil, false, err
+	}
 	if obj == nil {
 		return nil, false, errors.NewBadRequest(fmt.Sprintf("nil update passed to Scale"))
 	}
@@ -214,13 +239,9 @@ func (r *ScaleREST) Update(ctx api.Context, obj runtime.Object) (runtime.Object,
 	}
 
 	if errs := extvalidation.ValidateScale(scale); len(errs) > 0 {
-		return nil, false, errors.NewInvalid(extensions.Kind("Scale"), scale.Name, errs)
+		return nil, false, errors.NewInvalid(extensions.Kind("Scale"), name, errs)
 	}
 
-	deployment, err := r.registry.GetDeployment(ctx, scale.Name)
-	if err != nil {
-		return nil, false, errors.NewNotFound(extensions.Resource("deployments/scale"), scale.Name)
-	}
 	deployment.Spec.Replicas = scale.Spec.Replicas
 	deployment.ResourceVersion = scale.ResourceVersion
 	deployment, err = r.registry.UpdateDeployment(ctx, deployment)

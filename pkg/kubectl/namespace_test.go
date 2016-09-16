@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ func TestNamespaceGenerate(t *testing.T) {
 		params    map[string]interface{}
 		expected  *api.Namespace
 		expectErr bool
+		index     int
 	}{
 		{
 			params: map[string]interface{}{
@@ -44,15 +45,45 @@ func TestNamespaceGenerate(t *testing.T) {
 			params:    map[string]interface{}{},
 			expectErr: true,
 		},
+		{
+			params: map[string]interface{}{
+				"name": 1,
+			},
+			expectErr: true,
+		},
+		{
+			params: map[string]interface{}{
+				"name": nil,
+			},
+			expectErr: true,
+		},
+		{
+			params: map[string]interface{}{
+				"name_wrong_key": "some_value",
+			},
+			expectErr: true,
+		},
+		{
+			params: map[string]interface{}{
+				"NAME": "some_value",
+			},
+			expectErr: true,
+		},
 	}
 	generator := NamespaceGeneratorV1{}
-	for _, test := range tests {
+	for index, test := range tests {
 		obj, err := generator.Generate(test.params)
-		if !test.expectErr && err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if test.expectErr && err != nil {
-			continue
+		switch {
+		case test.expectErr && err != nil:
+			continue // loop, since there's no output to check
+		case test.expectErr && err == nil:
+			t.Errorf("%v: expected error and didn't get one", index)
+			continue // loop, no expected output object
+		case !test.expectErr && err != nil:
+			t.Errorf("%v: unexpected error %v", index, err)
+			continue // loop, no output object
+		case !test.expectErr && err == nil:
+			// do nothing and drop through
 		}
 		if !reflect.DeepEqual(obj.(*api.Namespace), test.expected) {
 			t.Errorf("\nexpected:\n%#v\nsaw:\n%#v", test.expected, obj.(*api.Namespace))

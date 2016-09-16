@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -146,5 +146,15 @@ func TestScrubDNS(t *testing.T) {
 		if !reflect.DeepEqual(s, tcs[i].searchesOut) {
 			t.Errorf("Expected %v, got %v", tcs[i].searchesOut, s)
 		}
+	}
+}
+
+func TestCreateFirewallFails(t *testing.T) {
+	name := "loadbalancer"
+	region := "us-central1"
+	desc := "description"
+	gce := &GCECloud{}
+	if err := gce.createFirewall(name, region, desc, nil, nil, nil); err == nil {
+		t.Errorf("error expected when creating firewall without any tags found")
 	}
 }

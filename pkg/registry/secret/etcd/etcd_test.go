@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 
 func newStorage(t *testing.T) (*REST, *etcdtesting.EtcdTestServer) {
 	etcdStorage, server := registrytest.NewEtcdStorage(t, "")
-	restOptions := generic.RESTOptions{etcdStorage, generic.UndecoratedStorage, 1}
+	restOptions := generic.RESTOptions{StorageConfig: etcdStorage, Decorator: generic.UndecoratedStorage, DeleteCollectionWorkers: 1}
 	return NewREST(restOptions), server
 }
 
@@ -49,7 +49,8 @@ func validNewSecret(name string) *api.Secret {
 func TestCreate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	secret := validNewSecret("foo")
 	secret.ObjectMeta = api.ObjectMeta{GenerateName: "foo-"}
 	test.TestCreate(
@@ -71,7 +72,8 @@ func TestCreate(t *testing.T) {
 func TestUpdate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestUpdate(
 		// valid
 		validNewSecret("foo"),
@@ -87,28 +89,32 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestDelete(validNewSecret("foo"))
 }
 
 func TestGet(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestGet(validNewSecret("foo"))
 }
 
 func TestList(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestList(validNewSecret("foo"))
 }
 
 func TestWatch(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
-	test := registrytest.New(t, storage.Etcd)
+	defer storage.Store.DestroyFunc()
+	test := registrytest.New(t, storage.Store)
 	test.TestWatch(
 		validNewSecret("foo"),
 		// matching labels

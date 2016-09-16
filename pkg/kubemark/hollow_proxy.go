@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ func NewHollowProxyOrDie(
 ) *HollowProxy {
 	// Create and start Hollow Proxy
 	config := options.NewProxyConfig()
-	config.OOMScoreAdj = util.IntPtr(0)
+	config.OOMScoreAdj = util.Int32Ptr(0)
 	config.ResourceContainer = ""
 	config.NodeRef = &api.ObjectReference{
 		Kind:      "Node",

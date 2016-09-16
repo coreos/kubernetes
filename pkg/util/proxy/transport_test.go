@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -219,8 +219,7 @@ func TestProxyTransport(t *testing.T) {
 			w.Header().Set("Content-Type", item.contentType)
 			fmt.Fprint(w, item.input)
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer server.Close()
+		defer server.Close()
 
 		// Replace source URL with our test server address.
 		sourceURL := parseURLOrDie(item.sourceURL)

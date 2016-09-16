@@ -2,15 +2,15 @@
 
 <!-- BEGIN STRIP_FOR_RELEASE -->
 
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
-<img src="http://kubernetes.io/img/warning.png" alt="WARNING"
+<img src="http://kubernetes.io/kubernetes/img/warning.png" alt="WARNING"
      width="25" height="25">
 
 <h2>PLEASE NOTE: This document applies to the HEAD of the source tree</h2>
@@ -21,7 +21,7 @@ refer to the docs that go with that version.
 <!-- TAG RELEASE_LINK, added by the munger automatically -->
 <strong>
 The latest release of this document can be found
-[here](http://releases.k8s.io/release-1.2/docs/proposals/pod-security-context.md).
+[here](http://releases.k8s.io/release-1.4/docs/proposals/pod-security-context.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -40,7 +40,7 @@ order to correctly model pod- and container-level security concerns.
 ## Motivation
 
 Currently, containers have a `SecurityContext` attribute which contains information about the
-security settings the container uses.  In practice many of these attributes are uniform across all
+security settings the container uses.  In practice, many of these attributes are uniform across all
 containers in a pod.  Simultaneously, there is also a need to apply the security context pattern
 at the pod level to correctly model security attributes that apply only at a pod level.
 
@@ -277,7 +277,7 @@ to implement, explain, and support.  Instead, we will approach backward compatib
         securityContext:
           runAsUser: 1001
       - name: b
-        securityContest:
+        securityContext:
           runAsUser: 1002
     ```
 

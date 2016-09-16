@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,9 +18,8 @@ package cinder
 
 import (
 	"errors"
-	"io/ioutil"
+	"fmt"
 	"os"
-	"path"
 	"strings"
 	"time"
 
@@ -33,7 +32,7 @@ type CinderDiskUtil struct{}
 
 // Attaches a disk specified by a volume.CinderPersistenDisk to the current kubelet.
 // Mounts the disk to it's global path.
-func (util *CinderDiskUtil) AttachDisk(b *cinderVolumeBuilder, globalPDPath string) error {
+func (util *CinderDiskUtil) AttachDisk(b *cinderVolumeMounter, globalPDPath string) error {
 	options := []string{}
 	if b.readOnly {
 		options = append(options, "ro")
@@ -42,7 +41,11 @@ func (util *CinderDiskUtil) AttachDisk(b *cinderVolumeBuilder, globalPDPath stri
 	if err != nil {
 		return err
 	}
-	diskid, err := cloud.AttachDisk(b.pdName)
+	instanceid, err := cloud.InstanceID()
+	if err != nil {
+		return err
+	}
+	diskid, err := cloud.AttachDisk(instanceid, b.pdName)
 	if err != nil {
 		return err
 	}
@@ -50,8 +53,7 @@ func (util *CinderDiskUtil) AttachDisk(b *cinderVolumeBuilder, globalPDPath stri
 	var devicePath string
 	numTries := 0
 	for {
-		devicePath = makeDevicePath(diskid)
-		// probe the attached vol so that symlink in /dev/disk/by-id is created
+		devicePath = cloud.GetDevicePath(diskid)
 		probeAttachedVolume()
 
 		_, err := os.Stat(devicePath)
@@ -89,23 +91,8 @@ func (util *CinderDiskUtil) AttachDisk(b *cinderVolumeBuilder, globalPDPath stri
 	return nil
 }
 
-func makeDevicePath(diskid string) string {
-	files, _ := ioutil.ReadDir("/dev/disk/by-id/")
-	for _, f := range files {
-		if strings.Contains(f.Name(), "virtio-") {
-			devid_prefix := f.Name()[len("virtio-"):len(f.Name())]
-			if strings.Contains(diskid, devid_prefix) {
-				glog.V(4).Infof("Found disk attached as %q; full devicepath: %s\n", f.Name(), path.Join("/dev/disk/by-id/", f.Name()))
-				return path.Join("/dev/disk/by-id/", f.Name())
-			}
-		}
-	}
-	glog.Warningf("Failed to find device for the diskid: %q\n", diskid)
-	return ""
-}
-
 // Unmounts the device and detaches the disk from the kubelet's host machine.
-func (util *CinderDiskUtil) DetachDisk(cd *cinderVolumeCleaner) error {
+func (util *CinderDiskUtil) DetachDisk(cd *cinderVolumeUnmounter) error {
 	globalPDPath := makeGlobalPDName(cd.plugin.host, cd.pdName)
 	if err := cd.mounter.Unmount(globalPDPath); err != nil {
 		return err
@@ -119,8 +106,11 @@ func (util *CinderDiskUtil) DetachDisk(cd *cinderVolumeCleaner) error {
 	if err != nil {
 		return err
 	}
-
-	if err = cloud.DetachDisk(cd.pdName); err != nil {
+	instanceid, err := cloud.InstanceID()
+	if err != nil {
+		return err
+	}
+	if err = cloud.DetachDisk(instanceid, cd.pdName); err != nil {
 		return err
 	}
 	glog.V(2).Infof("Successfully detached cinder volume %s", cd.pdName)
@@ -151,7 +141,26 @@ func (util *CinderDiskUtil) CreateVolume(c *cinderVolumeProvisioner) (volumeID s
 	// Cinder works with gigabytes, convert to GiB with rounding up
 	volSizeGB := int(volume.RoundUpSize(volSizeBytes, 1024*1024*1024))
 	name := volume.GenerateVolumeName(c.options.ClusterName, c.options.PVName, 255) // Cinder volume name can have up to 255 characters
-	name, err = cloud.CreateVolume(name, volSizeGB, c.options.CloudTags)
+	vtype := ""
+	availability := ""
+	// Apply ProvisionerParameters (case-insensitive). We leave validation of
+	// the values to the cloud provider.
+	for k, v := range c.options.Parameters {
+		switch strings.ToLower(k) {
+		case "type":
+			vtype = v
+		case "availability":
+			availability = v
+		default:
+			return "", 0, fmt.Errorf("invalid option %q for volume plugin %s", k, c.plugin.GetPluginName())
+		}
+	}
+	// TODO: implement c.options.ProvisionerSelector parsing
+	if c.options.Selector != nil {
+		return "", 0, fmt.Errorf("claim.Spec.Selector is not supported for dynamic provisioning on Cinder")
+	}
+
+	name, err = cloud.CreateVolume(name, volSizeGB, vtype, availability, c.options.CloudTags)
 	if err != nil {
 		glog.V(2).Infof("Error creating cinder volume: %v", err)
 		return "", 0, err

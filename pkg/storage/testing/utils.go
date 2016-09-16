@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 
 // CreateObj will create a single object using the storage interface
 func CreateObj(helper storage.Interface, name string, obj, out runtime.Object, ttl uint64) error {
-	return helper.Set(context.TODO(), name, obj, out, ttl)
+	return helper.Create(context.TODO(), name, obj, out, ttl)
 }
 
 //CreateObjList will create a list from the array of objects

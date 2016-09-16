@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/clock"
 )
 
 // WorkQueue allows queuing items with a timestamp. An item is
@@ -34,16 +34,16 @@ type WorkQueue interface {
 }
 
 type basicWorkQueue struct {
-	clock util.Clock
+	clock clock.Clock
 	lock  sync.Mutex
 	queue map[types.UID]time.Time
 }
 
 var _ WorkQueue = &basicWorkQueue{}
 
-func NewBasicWorkQueue() WorkQueue {
+func NewBasicWorkQueue(clock clock.Clock) WorkQueue {
 	queue := make(map[types.UID]time.Time)
-	return &basicWorkQueue{queue: queue, clock: util.RealClock{}}
+	return &basicWorkQueue{queue: queue, clock: clock}
 }
 
 func (q *basicWorkQueue) GetWork() []types.UID {

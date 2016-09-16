@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@ limitations under the License.
 package clientcmd
 
 import (
+	"io/ioutil"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/imdario/mergo"
-	"k8s.io/kubernetes/pkg/client/restclient"
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 )
 
@@ -78,7 +80,7 @@ func TestInsecureOverridesCA(t *testing.T) {
 		ClusterInfo: clientcmdapi.Cluster{
 			InsecureSkipTLSVerify: true,
 		},
-	})
+	}, nil)
 
 	actualCfg, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -94,7 +96,7 @@ func TestMergeContext(t *testing.T) {
 	const namespace = "overriden-namespace"
 
 	config := createValidTestConfig()
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	_, overridden, err := clientBuilder.Namespace()
 	if err != nil {
@@ -109,7 +111,7 @@ func TestMergeContext(t *testing.T) {
 		Context: clientcmdapi.Context{
 			Namespace: namespace,
 		},
-	})
+	}, nil)
 
 	actual, overridden, err := clientBuilder.Namespace()
 	if err != nil {
@@ -143,7 +145,7 @@ func TestCertificateData(t *testing.T) {
 	}
 	config.CurrentContext = "clean"
 
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -174,7 +176,7 @@ func TestBasicAuthData(t *testing.T) {
 	}
 	config.CurrentContext = "clean"
 
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -186,9 +188,83 @@ func TestBasicAuthData(t *testing.T) {
 	matchStringArg(password, clientConfig.Password, t)
 }
 
+func TestBasicTokenFile(t *testing.T) {
+	token := "exampletoken"
+	f, err := ioutil.TempFile("", "tokenfile")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+	defer os.Remove(f.Name())
+	if err := ioutil.WriteFile(f.Name(), []byte(token), 0644); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+
+	config := clientcmdapi.NewConfig()
+	config.Clusters["clean"] = &clientcmdapi.Cluster{
+		Server: "https://localhost:8443",
+	}
+	config.AuthInfos["clean"] = &clientcmdapi.AuthInfo{
+		TokenFile: f.Name(),
+	}
+	config.Contexts["clean"] = &clientcmdapi.Context{
+		Cluster:  "clean",
+		AuthInfo: "clean",
+	}
+	config.CurrentContext = "clean"
+
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
+
+	clientConfig, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	matchStringArg(token, clientConfig.BearerToken, t)
+}
+
+func TestPrecedenceTokenFile(t *testing.T) {
+	token := "exampletoken"
+	f, err := ioutil.TempFile("", "tokenfile")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+	defer os.Remove(f.Name())
+	if err := ioutil.WriteFile(f.Name(), []byte(token), 0644); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+
+	config := clientcmdapi.NewConfig()
+	config.Clusters["clean"] = &clientcmdapi.Cluster{
+		Server: "https://localhost:8443",
+	}
+	expectedToken := "expected"
+	config.AuthInfos["clean"] = &clientcmdapi.AuthInfo{
+		Token:     expectedToken,
+		TokenFile: f.Name(),
+	}
+	config.Contexts["clean"] = &clientcmdapi.Context{
+		Cluster:  "clean",
+		AuthInfo: "clean",
+	}
+	config.CurrentContext = "clean"
+
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
+
+	clientConfig, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	matchStringArg(expectedToken, clientConfig.BearerToken, t)
+}
+
 func TestCreateClean(t *testing.T) {
 	config := createValidTestConfig()
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -217,7 +293,7 @@ func TestCreateCleanWithPrefix(t *testing.T) {
 		{"anything", "anything"},
 	}
 
-	// WARNING: EnvVarCluster.Server is set during package loading time and can not be overriden by os.Setenv inside this test
+	// WARNING: EnvVarCluster.Server is set during package loading time and can not be overridden by os.Setenv inside this test
 	EnvVarCluster.Server = ""
 	tt = append(tt, struct{ server, host string }{"", "http://localhost:8080"})
 
@@ -228,11 +304,13 @@ func TestCreateCleanWithPrefix(t *testing.T) {
 		cleanConfig.Server = tc.server
 		config.Clusters["clean"] = cleanConfig
 
-		clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+		clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{
+			ClusterDefaults: DefaultCluster,
+		}, nil)
 
 		clientConfig, err := clientBuilder.ClientConfig()
 		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 
 		matchStringArg(tc.host, clientConfig.Host, t)
@@ -245,7 +323,7 @@ func TestCreateCleanDefault(t *testing.T) {
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	matchStringArg(config.Clusters["clean"].Server, clientConfig.Host, t)
@@ -253,22 +331,47 @@ func TestCreateCleanDefault(t *testing.T) {
 	matchStringArg(config.AuthInfos["clean"].Token, clientConfig.BearerToken, t)
 }
 
-func TestCreateMissingContext(t *testing.T) {
-	const expectedErrorContains = "Context was not found for specified context"
+func TestCreateCleanDefaultCluster(t *testing.T) {
 	config := createValidTestConfig()
-	clientBuilder := NewNonInteractiveClientConfig(*config, "not-present", &ConfigOverrides{})
+	clientBuilder := NewDefaultClientConfig(*config, &ConfigOverrides{
+		ClusterDefaults: DefaultCluster,
+	})
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	expectedConfig := &restclient.Config{Host: clientConfig.Host}
+	matchStringArg(config.Clusters["clean"].Server, clientConfig.Host, t)
+	matchBoolArg(config.Clusters["clean"].InsecureSkipTLSVerify, clientConfig.Insecure, t)
+	matchStringArg(config.AuthInfos["clean"].Token, clientConfig.BearerToken, t)
+}
 
-	if !reflect.DeepEqual(expectedConfig, clientConfig) {
-		t.Errorf("Expected %#v, got %#v", expectedConfig, clientConfig)
+func TestCreateMissingContextNoDefault(t *testing.T) {
+	const expectedErrorContains = "Context was not found for specified context"
+	config := createValidTestConfig()
+	clientBuilder := NewNonInteractiveClientConfig(*config, "not-present", &ConfigOverrides{}, nil)
+
+	_, err := clientBuilder.ClientConfig()
+	if err == nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
+}
 
+func TestCreateMissingContext(t *testing.T) {
+	const expectedErrorContains = "context was not found for specified context: not-present"
+	config := createValidTestConfig()
+	clientBuilder := NewNonInteractiveClientConfig(*config, "not-present", &ConfigOverrides{
+		ClusterDefaults: DefaultCluster,
+	}, nil)
+
+	_, err := clientBuilder.ClientConfig()
+	if err == nil {
+		t.Fatalf("Expected error: %v", expectedErrorContains)
+	}
+	if !strings.Contains(err.Error(), expectedErrorContains) {
+		t.Fatalf("Expected error: %v, but got %v", expectedErrorContains, err)
+	}
 }
 
 func matchBoolArg(expected, got bool, t *testing.T) {

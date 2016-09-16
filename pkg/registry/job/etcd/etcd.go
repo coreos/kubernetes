@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,53 +18,59 @@ package etcd
 
 import (
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/apis/extensions"
-	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/kubernetes/pkg/api/rest"
+	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/registry/cachesize"
 	"k8s.io/kubernetes/pkg/registry/generic"
-	etcdgeneric "k8s.io/kubernetes/pkg/registry/generic/etcd"
+	"k8s.io/kubernetes/pkg/registry/generic/registry"
 	"k8s.io/kubernetes/pkg/registry/job"
 	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/storage"
 )
 
 // REST implements a RESTStorage for jobs against etcd
 type REST struct {
-	*etcdgeneric.Etcd
+	*registry.Store
 }
 
 // NewREST returns a RESTStorage object that will work against Jobs.
 func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
-	prefix := "/jobs"
+	prefix := "/" + opts.ResourcePrefix
 
-	newListFunc := func() runtime.Object { return &extensions.JobList{} }
-	storageInterface := opts.Decorator(
-		opts.Storage, cachesize.GetWatchCacheSizeByResource(cachesize.Jobs), &extensions.Job{}, prefix, job.Strategy, newListFunc)
+	newListFunc := func() runtime.Object { return &batch.JobList{} }
+	storageInterface, dFunc := opts.Decorator(
+		opts.StorageConfig,
+		cachesize.GetWatchCacheSizeByResource(cachesize.Jobs),
+		&batch.Job{},
+		prefix,
+		job.Strategy,
+		newListFunc,
+		storage.NoTriggerPublisher,
+	)
 
-	store := &etcdgeneric.Etcd{
-		NewFunc: func() runtime.Object { return &extensions.Job{} },
+	store := &registry.Store{
+		NewFunc: func() runtime.Object { return &batch.Job{} },
 
 		// NewListFunc returns an object capable of storing results of an etcd list.
 		NewListFunc: newListFunc,
 		// Produces a path that etcd understands, to the root of the resource
 		// by combining the namespace in the context with the given prefix
 		KeyRootFunc: func(ctx api.Context) string {
-			return etcdgeneric.NamespaceKeyRootFunc(ctx, prefix)
+			return registry.NamespaceKeyRootFunc(ctx, prefix)
 		},
 		// Produces a path that etcd understands, to the resource by combining
 		// the namespace in the context with the given prefix
 		KeyFunc: func(ctx api.Context, name string) (string, error) {
-			return etcdgeneric.NamespaceKeyFunc(ctx, prefix, name)
+			return registry.NamespaceKeyFunc(ctx, prefix, name)
 		},
 		// Retrieve the name field of a job
 		ObjectNameFunc: func(obj runtime.Object) (string, error) {
-			return obj.(*extensions.Job).Name, nil
+			return obj.(*batch.Job).Name, nil
 		},
 		// Used to match objects based on labels/fields for list and watch
-		PredicateFunc: func(label labels.Selector, field fields.Selector) generic.Matcher {
-			return job.MatchJob(label, field)
-		},
-		QualifiedResource:       extensions.Resource("jobs"),
+		PredicateFunc:           job.MatchJob,
+		QualifiedResource:       batch.Resource("jobs"),
+		EnableGarbageCollection: opts.EnableGarbageCollection,
 		DeleteCollectionWorkers: opts.DeleteCollectionWorkers,
 
 		// Used to validate job creation
@@ -72,8 +78,10 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
 
 		// Used to validate job updates
 		UpdateStrategy: job.Strategy,
+		DeleteStrategy: job.Strategy,
 
-		Storage: storageInterface,
+		Storage:     storageInterface,
+		DestroyFunc: dFunc,
 	}
 
 	statusStore := *store
@@ -84,14 +92,19 @@ func NewREST(opts generic.RESTOptions) (*REST, *StatusREST) {
 
 // StatusREST implements the REST endpoint for changing the status of a resourcequota.
 type StatusREST struct {
-	store *etcdgeneric.Etcd
+	store *registry.Store
 }
 
 func (r *StatusREST) New() runtime.Object {
-	return &extensions.Job{}
+	return &batch.Job{}
+}
+
+// Get retrieves the object from the storage. It is required to support Patch.
+func (r *StatusREST) Get(ctx api.Context, name string) (runtime.Object, error) {
+	return r.store.Get(ctx, name)
 }
 
 // Update alters the status subset of an object.
-func (r *StatusREST) Update(ctx api.Context, obj runtime.Object) (runtime.Object, bool, error) {
-	return r.store.Update(ctx, obj)
+func (r *StatusREST) Update(ctx api.Context, name string, objInfo rest.UpdatedObjectInfo) (runtime.Object, bool, error) {
+	return r.store.Update(ctx, name, objInfo)
 }

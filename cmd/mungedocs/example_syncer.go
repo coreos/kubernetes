@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,14 +36,14 @@ var exampleMungeTagRE = regexp.MustCompile(beginMungeTag(fmt.Sprintf("%s %s", ex
 // the content of the example, thereby syncing it.
 //
 // For example,
-// <!-- BEGIN MUNGE: EXAMPLE ../../examples/guestbook/frontend-controller.yaml -->
+// <!-- BEGIN MUNGE: EXAMPLE ../../examples/guestbook/frontend-service.yaml -->
 //
 // ```yaml
 // foo:
 //    bar:
 // ```
 //
-// [Download example](../../examples/guestbook/frontend-controller.yaml?raw=true)
+// [Download example](../../examples/guestbook/frontend-service.yaml?raw=true)
 // <!-- END MUNGE: EXAMPLE -->
 func syncExamples(filePath string, mlines mungeLines) (mungeLines, error) {
 	var err error

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,14 +17,13 @@ limitations under the License.
 package unversioned
 
 import (
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/client/restclient"
 )
 
 type BatchInterface interface {
 	JobsNamespacer
+	ScheduledJobsNamespacer
 }
 
 // BatchClient is used to interact with Kubernetes batch features.
@@ -36,9 +35,13 @@ func (c *BatchClient) Jobs(namespace string) JobInterface {
 	return newJobsV1(c, namespace)
 }
 
+func (c *BatchClient) ScheduledJobs(namespace string) ScheduledJobInterface {
+	return newScheduledJobs(c, namespace)
+}
+
 func NewBatch(c *restclient.Config) (*BatchClient, error) {
 	config := *c
-	if err := setBatchDefaults(&config); err != nil {
+	if err := setGroupDefaults(batch.GroupName, &config); err != nil {
 		return nil, err
 	}
 	client, err := restclient.RESTClientFor(&config)
@@ -54,30 +57,4 @@ func NewBatchOrDie(c *restclient.Config) *BatchClient {
 		panic(err)
 	}
 	return client
-}
-
-func setBatchDefaults(config *restclient.Config) error {
-	// if batch group is not registered, return an error
-	g, err := registered.Group(batch.GroupName)
-	if err != nil {
-		return err
-	}
-	config.APIPath = defaultAPIPath
-	if config.UserAgent == "" {
-		config.UserAgent = restclient.DefaultKubernetesUserAgent()
-	}
-	// TODO: Unconditionally set the config.Version, until we fix the config.
-	//if config.Version == "" {
-	copyGroupVersion := g.GroupVersion
-	config.GroupVersion = &copyGroupVersion
-	//}
-
-	config.Codec = api.Codecs.LegacyCodec(*config.GroupVersion)
-	if config.QPS == 0 {
-		config.QPS = 5
-	}
-	if config.Burst == 0 {
-		config.Burst = 10
-	}
-	return nil
 }

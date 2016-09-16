@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/apis/extensions"
+	"k8s.io/kubernetes/pkg/apis/batch"
 	versioned "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 )
 
@@ -55,11 +55,11 @@ func TestJobSpecConversion(t *testing.T) {
 
 	// Test internal -> v1beta1.
 	for _, test := range tests {
-		i := &extensions.JobSpec{
+		i := &batch.JobSpec{
 			ManualSelector: test.in,
 		}
 		v := versioned.JobSpec{}
-		if err := api.Scheme.Convert(i, &v); err != nil {
+		if err := api.Scheme.Convert(i, &v, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !reflect.DeepEqual(test.expectOut, v.AutoSelector) {
@@ -72,8 +72,8 @@ func TestJobSpecConversion(t *testing.T) {
 		i := &versioned.JobSpec{
 			AutoSelector: test.in,
 		}
-		e := extensions.JobSpec{}
-		if err := api.Scheme.Convert(i, &e); err != nil {
+		e := batch.JobSpec{}
+		if err := api.Scheme.Convert(i, &e, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !reflect.DeepEqual(test.expectOut, e.ManualSelector) {

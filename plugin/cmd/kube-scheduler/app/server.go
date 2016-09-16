@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -76,12 +76,14 @@ func Run(s *options.SchedulerServer) error {
 	}
 	kubeconfig, err := clientcmd.BuildConfigFromFlags(s.Master, s.Kubeconfig)
 	if err != nil {
+		glog.Errorf("unable to build config from flags: %v", err)
 		return err
 	}
 
+	kubeconfig.ContentType = s.ContentType
 	// Override kubeconfig qps/burst settings from flags
 	kubeconfig.QPS = s.KubeAPIQPS
-	kubeconfig.Burst = s.KubeAPIBurst
+	kubeconfig.Burst = int(s.KubeAPIBurst)
 
 	kubeClient, err := client.New(kubeconfig)
 	if err != nil {
@@ -100,13 +102,13 @@ func Run(s *options.SchedulerServer) error {
 		mux.Handle("/metrics", prometheus.Handler())
 
 		server := &http.Server{
-			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(s.Port)),
+			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(int(s.Port))),
 			Handler: mux,
 		}
 		glog.Fatal(server.ListenAndServe())
 	}()
 
-	configFactory := factory.NewConfigFactory(kubeClient, s.SchedulerName)
+	configFactory := factory.NewConfigFactory(kubeClient, s.SchedulerName, s.HardPodAffinitySymmetricWeight, s.FailureDomains)
 	config, err := createConfig(s, configFactory)
 
 	if err != nil {
@@ -133,6 +135,7 @@ func Run(s *options.SchedulerServer) error {
 
 	id, err := os.Hostname()
 	if err != nil {
+		glog.Errorf("unable to get hostname: %v", err)
 		return err
 	}
 
@@ -176,11 +179,5 @@ func createConfig(s *options.SchedulerServer, configFactory *factory.ConfigFacto
 	}
 
 	// if the config file isn't provided, use the specified (or default) provider
-	// check of algorithm provider is registered and fail fast
-	_, err := factory.GetAlgorithmProvider(s.AlgorithmProvider)
-	if err != nil {
-		return nil, err
-	}
-
 	return configFactory.CreateFromProvider(s.AlgorithmProvider)
 }

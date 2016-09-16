@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -47,8 +47,7 @@ func TestGetEtcdVersion_ValidVersion(t *testing.T) {
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, validEtcdVersion)
 	}))
-	// TODO: Uncomment when fix #19254
-	// defer testServer.Close()
+	defer testServer.Close()
 
 	var version string
 	var err error
@@ -63,8 +62,7 @@ func TestGetEtcdVersion_ErrorStatus(t *testing.T) {
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
-	// TODO: Uncomment when fix #19254
-	// defer testServer.Close()
+	defer testServer.Close()
 
 	_, err := GetEtcdVersion(testServer.URL)
 	assert.NotNil(t, err)

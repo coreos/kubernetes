@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,7 +33,13 @@ func TestDecodeList(t *testing.T) {
 				Raw:         []byte(`{"kind":"Pod","apiVersion":"` + testapi.Default.GroupVersion().String() + `","metadata":{"name":"test"}}`),
 				ContentType: runtime.ContentTypeJSON,
 			},
-			&runtime.Unstructured{TypeMeta: runtime.TypeMeta{Kind: "Foo", APIVersion: "Bar"}, Object: map[string]interface{}{"test": "value"}},
+			&runtime.Unstructured{
+				Object: map[string]interface{}{
+					"kind":       "Foo",
+					"apiVersion": "Bar",
+					"test":       "value",
+				},
+			},
 		},
 	}
 	if errs := runtime.DecodeList(pl.Items, testapi.Default.Codec()); len(errs) != 0 {

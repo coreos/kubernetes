@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
@@ -27,16 +28,12 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	_ "k8s.io/kubernetes/pkg/api/install" // To register api.Pod used in tests below
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/restclient"
 	k8sruntime "k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/clock"
 	"k8s.io/kubernetes/pkg/util/strategicpatch"
 )
-
-func init() {
-	// Don't bother sleeping between retries.
-	sleepDuration = 0
-}
 
 type testEventSink struct {
 	OnCreate func(e *api.Event) (*api.Event, error)
@@ -346,15 +343,14 @@ func TestEventf(t *testing.T) {
 		},
 		OnPatch: OnPatchFactory(testCache, patchEvent),
 	}
-	eventBroadcaster := NewBroadcaster()
+	eventBroadcaster := NewBroadcasterForTests(0)
 	sinkWatcher := eventBroadcaster.StartRecordingToSink(&testEvents)
 
-	clock := util.NewFakeClock(time.Now())
+	clock := clock.NewFakeClock(time.Now())
 	recorder := recorderWithFakeClock(api.EventSource{Component: "eventTest"}, eventBroadcaster, clock)
 	for index, item := range table {
 		clock.Step(1 * time.Second)
-		logWatcher1 := eventBroadcaster.StartLogging(t.Logf) // Prove that it is useful
-		logWatcher2 := eventBroadcaster.StartLogging(func(formatter string, args ...interface{}) {
+		logWatcher := eventBroadcaster.StartLogging(func(formatter string, args ...interface{}) {
 			if e, a := item.expectLog, fmt.Sprintf(formatter, args...); e != a {
 				t.Errorf("Expected '%v', got '%v'", e, a)
 			}
@@ -367,18 +363,17 @@ func TestEventf(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
-		logWatcher1.Stop()
-		logWatcher2.Stop()
+		logWatcher.Stop()
 	}
 	sinkWatcher.Stop()
 }
 
-func recorderWithFakeClock(eventSource api.EventSource, eventBroadcaster EventBroadcaster, clock util.Clock) EventRecorder {
+func recorderWithFakeClock(eventSource api.EventSource, eventBroadcaster EventBroadcaster, clock clock.Clock) EventRecorder {
 	return &recorderImpl{eventSource, eventBroadcaster.(*eventBroadcasterImpl).Broadcaster, clock}
 }
 
@@ -416,7 +411,7 @@ func TestWriteEventError(t *testing.T) {
 		},
 	}
 
-	eventCorrelator := NewEventCorrelator(util.RealClock{})
+	eventCorrelator := NewEventCorrelator(clock.RealClock{})
 	randGen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	for caseName, ent := range table {
@@ -431,10 +426,45 @@ func TestWriteEventError(t *testing.T) {
 			},
 		}
 		ev := &api.Event{}
-		recordToSink(sink, ev, eventCorrelator, randGen)
+		recordToSink(sink, ev, eventCorrelator, randGen, 0)
 		if attempts != ent.attemptsWanted {
 			t.Errorf("case %v: wanted %d, got %d attempts", caseName, ent.attemptsWanted, attempts)
 		}
+	}
+}
+
+func TestUpdateExpiredEvent(t *testing.T) {
+	eventCorrelator := NewEventCorrelator(clock.RealClock{})
+	randGen := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	var createdEvent *api.Event
+
+	sink := &testEventSink{
+		OnPatch: func(*api.Event, []byte) (*api.Event, error) {
+			return nil, &errors.StatusError{
+				ErrStatus: unversioned.Status{
+					Code:   http.StatusNotFound,
+					Reason: unversioned.StatusReasonNotFound,
+				}}
+		},
+		OnCreate: func(event *api.Event) (*api.Event, error) {
+			createdEvent = event
+			return event, nil
+		},
+	}
+
+	ev := &api.Event{}
+	ev.ResourceVersion = "updated-resource-version"
+	ev.Count = 2
+	recordToSink(sink, ev, eventCorrelator, randGen, 0)
+
+	if createdEvent == nil {
+		t.Error("Event did not get created after patch failed")
+		return
+	}
+
+	if createdEvent.ResourceVersion != "" {
+		t.Errorf("Event did not have its resource version cleared, was %s", createdEvent.ResourceVersion)
 	}
 }
 
@@ -460,7 +490,7 @@ func TestLotsOfEvents(t *testing.T) {
 		},
 	}
 
-	eventBroadcaster := NewBroadcaster()
+	eventBroadcaster := NewBroadcasterForTests(0)
 	sinkWatcher := eventBroadcaster.StartRecordingToSink(&testEvents)
 	logWatcher := eventBroadcaster.StartLogging(func(formatter string, args ...interface{}) {
 		loggerCalled <- struct{}{}
@@ -557,16 +587,15 @@ func TestEventfNoNamespace(t *testing.T) {
 		},
 		OnPatch: OnPatchFactory(testCache, patchEvent),
 	}
-	eventBroadcaster := NewBroadcaster()
+	eventBroadcaster := NewBroadcasterForTests(0)
 	sinkWatcher := eventBroadcaster.StartRecordingToSink(&testEvents)
 
-	clock := util.NewFakeClock(time.Now())
+	clock := clock.NewFakeClock(time.Now())
 	recorder := recorderWithFakeClock(api.EventSource{Component: "eventTest"}, eventBroadcaster, clock)
 
 	for index, item := range table {
 		clock.Step(1 * time.Second)
-		logWatcher1 := eventBroadcaster.StartLogging(t.Logf) // Prove that it is useful
-		logWatcher2 := eventBroadcaster.StartLogging(func(formatter string, args ...interface{}) {
+		logWatcher := eventBroadcaster.StartLogging(func(formatter string, args ...interface{}) {
 			if e, a := item.expectLog, fmt.Sprintf(formatter, args...); e != a {
 				t.Errorf("Expected '%v', got '%v'", e, a)
 			}
@@ -579,14 +608,13 @@ func TestEventfNoNamespace(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 
-		logWatcher1.Stop()
-		logWatcher2.Stop()
+		logWatcher.Stop()
 	}
 	sinkWatcher.Stop()
 }
@@ -846,8 +874,8 @@ func TestMultiSinkCache(t *testing.T) {
 		OnPatch: OnPatchFactory(testCache2, patchEvent2),
 	}
 
-	eventBroadcaster := NewBroadcaster()
-	clock := util.NewFakeClock(time.Now())
+	eventBroadcaster := NewBroadcasterForTests(0)
+	clock := clock.NewFakeClock(time.Now())
 	recorder := recorderWithFakeClock(api.EventSource{Component: "eventTest"}, eventBroadcaster, clock)
 
 	sinkWatcher := eventBroadcaster.StartRecordingToSink(&testEvents)
@@ -858,10 +886,10 @@ func TestMultiSinkCache(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 	}
 
@@ -874,10 +902,10 @@ func TestMultiSinkCache(t *testing.T) {
 		// validate event
 		if item.expectUpdate {
 			actualEvent := <-patchEvent2
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		} else {
 			actualEvent := <-createEvent2
-			validateEvent(string(index), actualEvent, item.expect, t)
+			validateEvent(strconv.Itoa(index), actualEvent, item.expect, t)
 		}
 	}
 

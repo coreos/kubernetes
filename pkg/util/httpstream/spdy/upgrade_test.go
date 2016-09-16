@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -66,8 +66,7 @@ func TestUpgradeResponse(t *testing.T) {
 			}
 			defer conn.Close()
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer server.Close()
+		defer server.Close()
 
 		req, err := http.NewRequest("GET", server.URL, nil)
 		if err != nil {

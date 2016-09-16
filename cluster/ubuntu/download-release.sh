@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ grep -q "^${FLANNEL_VERSION}\$" binaries/.flannel 2>/dev/null || {
 }
 
 # ectd
-ETCD_VERSION=${ETCD_VERSION:-"2.2.1"}
+ETCD_VERSION=${ETCD_VERSION:-"2.3.1"}
 ETCD="etcd-v${ETCD_VERSION}-linux-amd64"
 echo "Prepare etcd ${ETCD_VERSION} release ..."
 grep -q "^${ETCD_VERSION}\$" binaries/.etcd 2>/dev/null || {
@@ -52,8 +52,23 @@ grep -q "^${ETCD_VERSION}\$" binaries/.etcd 2>/dev/null || {
   echo ${ETCD_VERSION} > binaries/.etcd
 }
 
+function get_latest_version_number {
+  local -r latest_url="https://storage.googleapis.com/kubernetes-release/release/stable.txt"
+  if [[ $(which wget) ]]; then
+    wget -qO- ${latest_url}
+  elif [[ $(which curl) ]]; then
+    curl -Ss ${latest_url}
+  else
+    echo "Couldn't find curl or wget.  Bailing out." >&2
+    exit 4
+  fi
+}
+
+if [ -z "$KUBE_VERSION" ]; then
+  KUBE_VERSION=$(get_latest_version_number | sed 's/^v//')
+fi
+
 # k8s
-KUBE_VERSION=${KUBE_VERSION:-"1.2.0"}
 echo "Prepare kubernetes ${KUBE_VERSION} release ..."
 grep -q "^${KUBE_VERSION}\$" binaries/.kubernetes 2>/dev/null || {
   curl -L https://github.com/kubernetes/kubernetes/releases/download/v${KUBE_VERSION}/kubernetes.tar.gz -o kubernetes.tar.gz

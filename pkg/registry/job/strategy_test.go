@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,8 +24,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/testapi"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
 	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/apis/extensions"
-	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/types"
 )
 
@@ -57,22 +56,22 @@ func TestJobStrategy(t *testing.T) {
 			Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent"}},
 		},
 	}
-	job := &extensions.Job{
+	job := &batch.Job{
 		ObjectMeta: api.ObjectMeta{
 			Name:      "myjob",
 			Namespace: api.NamespaceDefault,
 		},
-		Spec: extensions.JobSpec{
+		Spec: batch.JobSpec{
 			Selector:       validSelector,
 			Template:       validPodTemplateSpec,
 			ManualSelector: newBool(true),
 		},
-		Status: extensions.JobStatus{
+		Status: batch.JobStatus{
 			Active: 11,
 		},
 	}
 
-	Strategy.PrepareForCreate(job)
+	Strategy.PrepareForCreate(ctx, job)
 	if job.Status.Active != 0 {
 		t.Errorf("Job does not allow setting status on create")
 	}
@@ -80,19 +79,19 @@ func TestJobStrategy(t *testing.T) {
 	if len(errs) != 0 {
 		t.Errorf("Unexpected error validating %v", errs)
 	}
-	parallelism := 10
-	updatedJob := &extensions.Job{
+	parallelism := int32(10)
+	updatedJob := &batch.Job{
 		ObjectMeta: api.ObjectMeta{Name: "bar", ResourceVersion: "4"},
-		Spec: extensions.JobSpec{
+		Spec: batch.JobSpec{
 			Parallelism: &parallelism,
 		},
-		Status: extensions.JobStatus{
+		Status: batch.JobStatus{
 			Active: 11,
 		},
 	}
 	// ensure we do not change status
 	job.Status.Active = 10
-	Strategy.PrepareForUpdate(updatedJob, job)
+	Strategy.PrepareForUpdate(ctx, updatedJob, job)
 	if updatedJob.Status.Active != 10 {
 		t.Errorf("PrepareForUpdate should have preserved prior version status")
 	}
@@ -114,19 +113,19 @@ func TestJobStrategyWithGeneration(t *testing.T) {
 			Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent"}},
 		},
 	}
-	job := &extensions.Job{
+	job := &batch.Job{
 		ObjectMeta: api.ObjectMeta{
 			Name:      "myjob2",
 			Namespace: api.NamespaceDefault,
 			UID:       theUID,
 		},
-		Spec: extensions.JobSpec{
+		Spec: batch.JobSpec{
 			Selector: nil,
 			Template: validPodTemplateSpec,
 		},
 	}
 
-	Strategy.PrepareForCreate(job)
+	Strategy.PrepareForCreate(ctx, job)
 	errs := Strategy.Validate(ctx, job)
 	if len(errs) != 0 {
 		t.Errorf("Unexpected error validating %v", errs)
@@ -173,40 +172,40 @@ func TestJobStatusStrategy(t *testing.T) {
 			Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: "IfNotPresent"}},
 		},
 	}
-	oldParallelism := 10
-	newParallelism := 11
-	oldJob := &extensions.Job{
+	oldParallelism := int32(10)
+	newParallelism := int32(11)
+	oldJob := &batch.Job{
 		ObjectMeta: api.ObjectMeta{
 			Name:            "myjob",
 			Namespace:       api.NamespaceDefault,
 			ResourceVersion: "10",
 		},
-		Spec: extensions.JobSpec{
+		Spec: batch.JobSpec{
 			Selector:    validSelector,
 			Template:    validPodTemplateSpec,
 			Parallelism: &oldParallelism,
 		},
-		Status: extensions.JobStatus{
+		Status: batch.JobStatus{
 			Active: 11,
 		},
 	}
-	newJob := &extensions.Job{
+	newJob := &batch.Job{
 		ObjectMeta: api.ObjectMeta{
 			Name:            "myjob",
 			Namespace:       api.NamespaceDefault,
 			ResourceVersion: "9",
 		},
-		Spec: extensions.JobSpec{
+		Spec: batch.JobSpec{
 			Selector:    validSelector,
 			Template:    validPodTemplateSpec,
 			Parallelism: &newParallelism,
 		},
-		Status: extensions.JobStatus{
+		Status: batch.JobStatus{
 			Active: 12,
 		},
 	}
 
-	StatusStrategy.PrepareForUpdate(newJob, oldJob)
+	StatusStrategy.PrepareForUpdate(ctx, newJob, oldJob)
 	if newJob.Status.Active != 12 {
 		t.Errorf("Job status updates must allow changes to job status")
 	}
@@ -226,7 +225,7 @@ func TestSelectableFieldLabelConversions(t *testing.T) {
 	apitesting.TestSelectableFieldLabelConversionsOfKind(t,
 		testapi.Extensions.GroupVersion().String(),
 		"Job",
-		labels.Set(JobToSelectableFields(&extensions.Job{})),
+		JobToSelectableFields(&batch.Job{}),
 		nil,
 	)
 }
