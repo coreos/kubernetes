@@ -726,6 +726,7 @@ var (
 	VsphereVolume         FSType = "vsphereVolume"
 	Quobyte               FSType = "quobyte"
 	AzureDisk             FSType = "azureDisk"
+	CinderLocal           FSType = "cinderLocal"
 	All                   FSType = "*"
 )
 
