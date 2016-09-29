@@ -178,7 +178,7 @@ func newCinderClient(host volume.VolumeHost, secret *api.Secret) (*gophercloud.S
 
 	provider, err := openstack.AuthenticatedClient(authOpts)
 	if err != nil {
-		glog.V(2).Infof("AuthenticatedClient failed: %v", err)
+		glog.V(4).Infof("AuthenticatedClient failed: %v", err)
 		return nil, err
 	}
 
@@ -186,7 +186,7 @@ func newCinderClient(host volume.VolumeHost, secret *api.Secret) (*gophercloud.S
 
 	client, err := openstack.NewBlockStorageV2(provider, eo)
 	if err != nil {
-		glog.V(2).Infof("NewBlockStorageV2 failed: %v", err)
+		glog.V(4).Infof("NewBlockStorageV2 failed: %v", err)
 		return nil, err
 	}
 
@@ -292,7 +292,7 @@ func mountFS(mounter mount.Interface, devicePath string, fsType string, readOnly
 		if err != nil {
 			return fmt.Errorf("error mounting %s to %s: %v", devicePath, mntPoint, err)
 		}
-		glog.V(2).Infof("Safe mount successful: %q", devicePath)
+		glog.V(4).Infof("Safe mount successful: %q", devicePath)
 	}
 
 	return nil
@@ -301,7 +301,7 @@ func mountFS(mounter mount.Interface, devicePath string, fsType string, readOnly
 // Attaches a disk specified by a volume.CinderPersistenDisk to the current kubelet.
 // Mounts the disk to it's global path.
 func (util *cinderDiskUtil) AttachDisk(m *cinderVolumeMounter, mntPoint string) error {
-	glog.V(2).Infof("cinderDiskUtil.AttachDisk: %v", mntPoint)
+	glog.V(4).Infof("cinderDiskUtil.AttachDisk: %v", mntPoint)
 
 	secret, err := getSecret(m.plugin.host, m.source.SecretRef)
 	if err != nil {
@@ -320,7 +320,7 @@ func (util *cinderDiskUtil) AttachDisk(m *cinderVolumeMounter, mntPoint string) 
 		return err
 	}
 
-	glog.V(2).Infof("Calling volumeactions.Reserve(%v)", m.source.VolumeID)
+	glog.V(4).Infof("Calling volumeactions.Reserve(%v)", m.source.VolumeID)
 	rsvResult := volumeactions.Reserve(client, m.source.VolumeID)
 	if rsvResult.Err != nil {
 		return fmt.Errorf("cinder 'reserve' failed: %v", rsvResult.Err)
@@ -344,19 +344,19 @@ func (util *cinderDiskUtil) AttachDisk(m *cinderVolumeMounter, mntPoint string) 
 		return fmt.Errorf("%q volume type is not supported", volType)
 	}
 
-	glog.V(2).Infof("cinderDiskUtil.AttachDisk: calling volHandler.AttachDisk")
+	glog.V(4).Infof("cinderDiskUtil.AttachDisk: calling volHandler.AttachDisk")
 	devicePath, err := volHandler.AttachDisk(connInfo)
 	if err != nil {
 		return err
 	}
-	glog.V(2).Infof("cinderDiskUtil.AttachDisk: volHandler.AttachDisk succeeded, calling mountFS")
+	glog.V(4).Infof("cinderDiskUtil.AttachDisk: volHandler.AttachDisk succeeded, calling mountFS")
 
 	err = mountFS(m.mounter, devicePath, m.source.FSType, m.readOnly, mntPoint)
 	if err != nil {
 		return err
 	}
 
-	glog.V(2).Infof("cinderDiskUtil.AttachDisk: calling finalizeAttach")
+	glog.V(4).Infof("cinderDiskUtil.AttachDisk: calling finalizeAttach")
 	if err = finalizeAttach(client, m.source.VolumeID, m.readOnly, mntPoint, m.plugin.host); err == nil {
 		unreserve.cancel()
 	}

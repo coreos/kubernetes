@@ -363,7 +363,7 @@ var _ volume.Deleter = &cinderVolumeDeleter{}
 
 func (d *cinderVolumeDeleter) GetPath() string {
 	// GetPath is part of Deleter interface but I think it's by mistake
-	glog.V(2).Info("cinderVolumeDeleter.GetPath() called but not implemented")
+	glog.V(4).Info("cinderVolumeDeleter.GetPath() called but not implemented")
 	return ""
 }
 
