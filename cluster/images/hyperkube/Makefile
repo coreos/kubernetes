@@ -111,6 +111,11 @@ else
 endif
 	# Download CNI
 	curl -sSL --retry 5 https://storage.googleapis.com/kubernetes-release/network-plugins/cni-${ARCH}-${CNI_RELEASE}.tar.gz | tar -xz -C ${TEMP_DIR}/cni-bin
+	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.5.6/calico
+	rm ${TEMP_DIR}/cni-bin/bin/flannel
+	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/flannel https://storage.googleapis.com/aaron-dev/flannel
+	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
+	chmod +x ${TEMP_DIR}/cni-bin/bin/flannel
 
 	docker build --pull -t ${REGISTRY}/hyperkube-${ARCH}:${VERSION} ${TEMP_DIR}
 	rm -rf "${TEMP_DIR}"
