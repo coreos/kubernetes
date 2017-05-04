@@ -20,7 +20,7 @@
 REGISTRY?=gcr.io/google_containers
 ARCH?=amd64
 TEMP_DIR:=$(shell mktemp -d -t hyperkubeXXXXXX)
-CNI_RELEASE=0799f5732f2a11b329d9e3d51b9c8f2e3759f2ff
+CNI_RELEASE=0.5.2
 CACHEBUST?=1
 QEMUVERSION=v2.7.0
 
@@ -60,7 +60,7 @@ ifndef VERSION
     $(error VERSION is undefined)
 endif
 	cp -r ./* ${TEMP_DIR}
-	mkdir -p ${TEMP_DIR}/cni-bin ${TEMP_DIR}/addons ${TEMP_DIR}/addons/singlenode ${TEMP_DIR}/addons/multinode
+	mkdir -p ${TEMP_DIR}/cni-bin/bin ${TEMP_DIR}/addons ${TEMP_DIR}/addons/singlenode ${TEMP_DIR}/addons/multinode
 	cp ../../saltbase/salt/generate-cert/make-ca-cert.sh ${TEMP_DIR}
 
 	# Singlenode addons
@@ -110,8 +110,8 @@ else
 	curl -sSL --retry 5 https://github.com/multiarch/qemu-user-static/releases/download/$(QEMUVERSION)/x86_64_qemu-${QEMUARCH}-static.tar.gz | tar -xz -C ${TEMP_DIR}
 endif
 	# Download CNI
-	curl -sSL --retry 5 https://storage.googleapis.com/kubernetes-release/network-plugins/cni-${ARCH}-${CNI_RELEASE}.tar.gz | tar -xz -C ${TEMP_DIR}/cni-bin
-	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.6.2/calico
+	curl -sSL --retry 5 https://github.com/containernetworking/cni/releases/download/v${CNI_RELEASE}/cni-${ARCH}-v${CNI_RELEASE}.tgz | tar -xz -C ${TEMP_DIR}/cni-bin/bin
+	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.8.0/calico
 	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
 
 	docker build --pull -t ${REGISTRY}/hyperkube-${ARCH}:${VERSION} ${TEMP_DIR}
