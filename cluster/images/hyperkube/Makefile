@@ -101,6 +101,8 @@ endif
 ifeq ($(ARCH),amd64)
 	# When building "normally" for amd64, remove the whole line, it has no part in the amd64 image
 	cd ${TEMP_DIR} && ${SED_CMD} "/CROSS_BUILD_/d" Dockerfile
+	# Add CAP_NET_BIND_SERVICE to hyperkube so it can bind privileged ports as non-root.
+	cd ${TEMP_DIR} && setcap cap_net_bind_service=+ep hyperkube
 else
 	cd ${TEMP_DIR} && ${SED_CMD} "s/CROSS_BUILD_//g" Dockerfile
 
