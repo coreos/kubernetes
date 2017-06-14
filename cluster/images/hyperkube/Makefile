@@ -27,7 +27,7 @@ TEMP_DIR:=$(shell mktemp -d -t hyperkubeXXXXXX)
 
 all: build
 
-build:
+build: calico
 
 ifndef VERSION
     $(error VERSION is undefined)
@@ -52,4 +52,9 @@ ifeq ($(ARCH),amd64)
 	gcloud docker -- push ${REGISTRY}/hyperkube:${VERSION}
 endif
 
-.PHONY: build push all
+calico:
+	mkdir -p ${TEMP_DIR}/cni-bin/bin
+	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.10.0/calico
+	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
+
+.PHONY: build push all calico
