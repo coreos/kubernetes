@@ -54,7 +54,7 @@ endif
 
 calico:
 	mkdir -p ${TEMP_DIR}/cni-bin/bin
-	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.10.0/calico
+	curl -sSL --retry 5 -o ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.11.0/calico
 	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
 
 .PHONY: build push all calico
