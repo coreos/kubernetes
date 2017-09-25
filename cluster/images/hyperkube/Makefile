@@ -21,6 +21,8 @@ REGISTRY?=gcr.io/google-containers
 ARCH?=amd64
 OUT_DIR?=_output
 HYPERKUBE_BIN?=$(OUT_DIR)/dockerized/bin/linux/$(ARCH)/hyperkube
+CALICO_RELEASE=v1.11.3
+CNI_RELEASE=v0.6.0
 
 BASEIMAGE=gcr.io/google-containers/debian-hyperkube-base-$(ARCH):0.8
 TEMP_DIR:=$(shell mktemp -d -t hyperkubeXXXXXX)
@@ -54,7 +56,7 @@ endif
 
 calico:
 	mkdir -p ${TEMP_DIR}/cni-bin/bin
-	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.10.0/calico
+	curl -sSL --retry 5 -o ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.11.0/calico
 	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
 
 .PHONY: build push all calico
