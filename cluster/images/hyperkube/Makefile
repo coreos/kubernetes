@@ -21,7 +21,7 @@ REGISTRY?=gcr.io/google_containers
 ARCH?=amd64
 OUT_DIR?=_output
 TEMP_DIR:=$(shell mktemp -d -t hyperkubeXXXXXX)
-CNI_RELEASE=0799f5732f2a11b329d9e3d51b9c8f2e3759f2ff
+CNI_RELEASE=v0.6.0
 CACHEBUST?=1
 QEMUVERSION=v2.7.0
 
@@ -61,7 +61,7 @@ ifndef VERSION
     $(error VERSION is undefined)
 endif
 	cp -r ./* ${TEMP_DIR}
-	mkdir -p ${TEMP_DIR}/cni-bin
+	mkdir -p ${TEMP_DIR}/cni-bin/bin
 
 	cp ../../../$(OUT_DIR)/dockerized/bin/linux/${ARCH}/hyperkube ${TEMP_DIR}
 	chmod a+rx ${TEMP_DIR}/hyperkube
@@ -84,7 +84,8 @@ else
 	curl -sSL --retry 5 https://github.com/multiarch/qemu-user-static/releases/download/$(QEMUVERSION)/x86_64_qemu-${QEMUARCH}-static.tar.gz | tar -xz -C ${TEMP_DIR}
 endif
 	# Download CNI
-	curl -sSL --retry 5 https://storage.googleapis.com/kubernetes-release/network-plugins/cni-${ARCH}-${CNI_RELEASE}.tar.gz | tar -xz -C ${TEMP_DIR}/cni-bin
+	curl -sSL --retry 5 https://github.com/containernetworking/cni/releases/download/${CNI_RELEASE}/cni-${ARCH}-${CNI_RELEASE}.tgz | tar -xz -C ${TEMP_DIR}/cni-bin/bin
+	curl -sSL --retry 5 https://github.com/containernetworking/plugins/releases/download/${CNI_RELEASE}/cni-plugins-${ARCH}-${CNI_RELEASE}.tgz | tar -xz -C ${TEMP_DIR}/cni-bin/bin
 	curl -sSL --retry 5 -o  ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.11.0/calico
 	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
 
