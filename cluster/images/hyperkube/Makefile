@@ -21,13 +21,15 @@ REGISTRY?=gcr.io/google-containers
 ARCH?=amd64
 OUT_DIR?=_output
 HYPERKUBE_BIN?=$(OUT_DIR)/dockerized/bin/linux/$(ARCH)/hyperkube
+CALICO_RELEASE=v1.11.1
+CNI_RELEASE=v0.6.0
 
 BASEIMAGE=gcr.io/google-containers/debian-hyperkube-base-$(ARCH):0.8
 TEMP_DIR:=$(shell mktemp -d -t hyperkubeXXXXXX)
 
 all: build
 
-build: calico
+build: cni
 
 ifndef VERSION
     $(error VERSION is undefined)
@@ -52,9 +54,11 @@ ifeq ($(ARCH),amd64)
 	gcloud docker -- push ${REGISTRY}/hyperkube:${VERSION}
 endif
 
-calico:
+cni:
 	mkdir -p ${TEMP_DIR}/cni-bin/bin
-	curl -sSL --retry 5 -o ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/calico-cni/releases/download/v1.11.0/calico
+	curl -sSL --retry 5 https://github.com/containernetworking/cni/releases/download/${CNI_RELEASE}/cni-${ARCH}-${CNI_RELEASE}.tgz | tar -xz -C ${TEMP_DIR}/cni-bin/bin
+	curl -sSL --retry 5 https://github.com/containernetworking/plugins/releases/download/${CNI_RELEASE}/cni-plugins-${ARCH}-${CNI_RELEASE}.tgz | tar -xz -C ${TEMP_DIR}/cni-bin/bin
+	curl -sSL --retry 5 -o ${TEMP_DIR}/cni-bin/bin/calico https://github.com/projectcalico/cni-plugin/releases/download/${CALICO_RELEASE}/calico
 	chmod +x ${TEMP_DIR}/cni-bin/bin/calico
 
-.PHONY: build push all calico
+.PHONY: build push all cni
