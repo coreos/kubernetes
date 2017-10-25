@@ -14,7 +14,7 @@
 
 FROM BASEIMAGE
 
-# Copy calico to cni bin
+# Copy CNI binaries
 COPY cni-bin/bin/ /opt/cni/bin
 
 # Create symlinks for each hyperkube server
