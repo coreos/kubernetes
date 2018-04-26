@@ -14,6 +14,9 @@
 
 FROM BASEIMAGE
 
+# Copy CNI binaries
+COPY cni-bin/bin/ /opt/cni/bin
+
 # Create symlinks for each hyperkube server
 # Also create symlinks to /usr/local/bin/ where the server image binaries live, so the hyperkube image may be 
 # used instead of gcr.io/google_containers/kube-* without any modifications.
