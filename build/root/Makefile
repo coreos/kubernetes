@@ -39,7 +39,7 @@ MAKEFLAGS += --no-builtin-rules
 # Constants used throughout.
 .EXPORT_ALL_VARIABLES:
 OUT_DIR ?= _output
-BIN_DIR := $(OUT_DIR)/bin
+BIN_DIR := $(OUT_DIR)/local/go/bin
 PRJ_SRC_PATH := k8s.io/kubernetes
 GENERATED_FILE_PREFIX := zz_generated.
 

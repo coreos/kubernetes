@@ -103,6 +103,9 @@ kube::util::host_platform() {
   esac
 
   case "$(uname -m)" in
+    mips64*)
+      host_arch=mips64le
+      ;;
     x86_64*)
       host_arch=amd64
       ;;
